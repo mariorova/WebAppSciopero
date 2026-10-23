@@ -1,0 +1,15 @@
+# Ambienti virtuali Python
+backend/venv/
+venv/
+ENV/
+
+# Dipendenze Node.js Frontend
+frontend/node_modules/
+node_modules/
+
+# File di build e cache
+frontend/dist/
+__pycache__/
+*.pyc
+.DS_Store
+.env

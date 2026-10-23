@@ -1,0 +1,289 @@
+ANALISI DEI REQUISITI: 
+1. Requisiti Funzionali (Le funzionalità dell'app)
+Visualizzazione Scioperi: L'utente deve poter vedere una lista aggiornata degli scioperi dei trasporti pubblici
+
+Filtri di Ricerca: L'utente deve poter filtrare gli scioperi per città (es. Milano, Roma), per data e per tipologia di mezzo (Treno, Metro, Bus).
+
+Dettaglio Scioperi: Ogni sciopero deve mostrare data, orari, motivazioni, settore e la fonte originale. Inoltre deve essere mostrata una mappa di riferimento che mostra quale linea viene toccata (Ad esempio per la metro di Milano se c'è sciopero di una particolare linea mostrare una mappa delle linee di ATM Milano chiuse e quelle invece aperte, la stessa cosa deve adattarsi per gli altri scioperi)
+
+Sistema di Autenticazione: Gli utenti devono potersi registrare e fare il login per accedere alle funzionalità avanzate, per quelle basilari come visualizzazione dell'elenco scioperi non devono registrarsi. Le funzionalità avanzate per cui l'utente deve autenticarsi sono: visualizzazione dettagli sciopero (se non si autentica vede solo lo sciopero nella lista) e sistema di voto
+
+Sistema di Voto (Reputazione Fonti): Gli utenti registrati possono esprimere un voto (affidabile/non affidabile) sulla fonte di uno sciopero.
+
+Automazione Raccolta Dati (Scraping): Un sistema backend deve periodicamente estrarre i dati dal web e salvarli nel database.
+
+Gestione Fonti (Admin/Algoritmo): Il sistema deve aggiornare il punteggio di affidabilità delle fonti in base ai voti della community.
+
+2. Requisiti Non Funzionali (Qualità e Performance)
+Mobile-First / Responsive: Essendo un'app sui mezzi pubblici, la maggior parte degli utenti la consulterà da smartphone. Il design con React dovrà essere perfettamente ottimizzato per i dispositivi mobili.
+
+Aggiornamento dei dati: Il sistema di scraping deve girare in background senza rallentare la web app.
+
+Usabilità: L'interfaccia deve essere immediata: l'utente deve trovare lo sciopero della sua città in massimo 2 click.
+
+DEFINIZIONE BACKEND E DB
+1. ARCHITETTURA BACKEND, DATABASE E AUTOMAZIONE
+
+1.1 Scelta dello Stack Tecnologico (Backend)
+- Linguaggio: Python (scelto per l'eccellenza nel web scraping e nell'elaborazione dati).
+- Framework API: FastAPI (veloce, moderno e ideale per comunicare in tempo reale con il frontend in React).
+- Database: PostgreSQL (relazionale e robusto, ideale per gestire la struttura complessa di utenti, scioperi, fonti e voti).
+
+1.2 Motore di Scraping (Raccolta Dati)
+- Approccio ibrido basato sulle necessità delle fonti:
+  - BeautifulSoup / Requests per pagine web statiche.
+  - Playwright / Selenium per pagine dinamiche caricate via JavaScript o che richiedono interazioni.
+- Flusso di lavoro:
+  1. Connessione periodica alle fonti autorizzate (es. Ministero, ATM, ATAC).
+  2. Estrazione di dati testuali (data, orari, città, settore, linee coinvolte).
+  3. Controllo duplicati nel database per evitare inserimenti multipli.
+  4. Salvataggio del record associato alla fonte d'origine.
+
+1.3 Struttura del Database (Tabelle Principali)
+- users (Utenti):
+  - id, username, email, password_hash, created_at
+- sources (Fonti):
+  - id, url, name, reliability_score (punteggio 0-100 basato sui voti), is_active (disattivazione automatica se scende sotto soglia)
+- strikes (Scioperi):
+  - id, city, sector, start_time, end_time, description, affected_lines (dati JSON per la mappa delle linee), source_id
+- votes (Voti delle Fonti):
+  - id, user_id, source_id, is_reliable (booleano), created_at
+
+1.4 Automazione (Task Scheduler)
+- Esecuzione periodica automatica (tramite Cron Job o task scheduler integrato) ogni 4-6 ore per garantire l'aggiornamento tempestivo degli avvisi di sciopero senza gravare sulle performance della web app.
+
+2. DEFINIZIONE DELLE API
+Endpoint: /api/auth/register
+ - Metodo: POST
+ - Descrizione: Permette a un nuovo utente di registrarsi alla piattaforma fornendo le credenziali di accesso.
+ - Vincoli d'accesso: Nessuno (pubblico).
+ - Body della richiesta (JSON): username, email, password.
+   Risposta (Esempio JSON):
+   JSON
+    {
+    "message": "Utente registrato con successo",
+    "user_id": 1,
+    "username": "mario_rossi",
+    "email": "mario@email.com"
+    }
+    Codici di stato: 201 Created, 400 Bad Request (se l'email è già in uso).
+
+Endpoint: /api/auth/login
+ - Metodo: POST
+ - Descrizione: Autentica un utente esistente e restituisce un token di sessione (JWT) per accedere alle funzionalità protette.
+ - Vincoli d'accesso: Nessuno (pubblico).
+ - Body della richiesta (JSON): email, password.
+   Risposta (Esempio JSON):
+   JSON
+    {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "token_type": "bearer"
+    }
+    Codici di stato: 200 OK, 401 Unauthorized (credenziali non valide).
+
+Endpoint: /api/scioperi
+ - Metodo: GET
+ - Descrizione: Restituisce la lista di tutti gli scioperi attivi o futuri, con eventuale supporto a filtri e paginazione.
+ - Vincoli d'accesso: Nessuno (la lista base è visibile anche senza login).
+ - Parametri (Query String): citta (es. Milano, opzionale), settore (es. TPL, opzionale), page (0-n), size (1-20).
+ - Risposta (Esempio JSON):
+   JSON
+    {
+     "page": 0,
+     "size": 20,
+     "citta": "Milano",
+     "results": [
+     {
+      "id_sciopero": 1,
+      "citta": "Milano",
+      "settore": "TPL",
+      "data_inizio": "2026-06-15T08:30:00",
+      "data_fine": "2026-06-15T12:30:00",
+      "descrizione_sintetica": "Scioperi mezzi pubblici locali di 4 ore.",
+      "fonte_nome": "ATM Milano",
+      "scioperoLNK": "/api/scioperi/1"
+     }
+     ]
+    }
+    Codici di stato: 200 OK.
+
+Endpoint: /api/scioperi/{id}
+ - Metodo: GET
+ - Descrizione: Restituisce i dettagli completi di uno specifico sciopero, inclusi i dati strutturati per la mappa delle linee colpite (affected_lines).
+ - Vincoli d'accesso: Richiede autenticazione (come stabilito dai requisiti funzionali per l'accesso ai dettagli avanzati).
+ - Parametri (Path): id (identificativo numerico dello sciopero).
+ - Risposta (Esempio JSON):
+   JSON
+    {
+     "id_sciopero": 1,
+     "citta": "Milano",
+     "settore": "TPL",
+     "data_inizio": "2026-06-15T08:30:00",
+     "data_fine": "2026-06-15T12:30:00",
+     "motivazione": "Rivendicazioni sindacali aziendali",
+     "fonte": {
+       "id": 4,
+       "nome": "ATM Milano",
+       "url": "https://www.atm.it/scioperi",
+       "reliability_score": 85
+     },
+     "affected_lines": {
+       "chiuse": ["M1", "Tram 15"],
+       "aperte": ["M2", "M3", "M4", "M5"]
+     }
+    }
+    Codici di stato: 200 OK, 401 Unauthorized (utente non loggato), 404 Not Found.
+
+Endpoint: /api/fonti
+ - Metodo: GET
+ - Descrizione: Elenca tutte le fonti monitorate dal sistema di scraping con i relativi punteggi di affidabilità aggiornati.
+ - Vincoli d'accesso: Nessuno.
+ - Parametri (Query String): Nessuno.
+ - Risposta (Esempio JSON):
+   JSON
+    {
+    "total_sources": 2,
+    "sources": [
+      {
+      "id": 4,
+      "name": "ATM Milano",
+      "url": "https://www.atm.it/scioperi",
+      "reliability_score": 85,
+      "is_active": true
+      }
+     ]
+    }
+    Codici di stato: 200 OK.
+
+Endpoint: /api/fonti/{id}/voti
+ - Metodo: POST
+ - Descrizione: Permette a un utente registrato di esprimere un voto (affidabile / non affidabile) sulla fonte di uno sciopero.
+ - Vincoli d'accesso: Richiede autenticazione (utente loggato).
+ - Parametri (Path): id (identificativo della fonte).
+ - Body della richiesta (JSON): is_reliable (booleano: true per pollice su, false per pollice giù).
+ - Risposta (Esempio JSON):
+   JSON
+    {
+    "message": "Voto registrato con successo",
+    "source_id": 4,
+    "new_reliability_score": 86
+    }
+    Codici di stato: 200 OK, 401 Unauthorized (utente non loggato), 404 Not Found.
+
+3. STRUTTURA DELLE CARTELLE (src/)
+src/
+├── api/                  # Comunicazione con il backend FastAPI (es. axiosClient.js)
+├── assets/               # Immagini, loghi o icone statiche
+├── components/           # Componenti riutilizzabili dell'interfaccia
+│   ├── Navbar.jsx        # Barra di navigazione con stato utente e login/logout
+│   ├── Footer.jsx        # Piè di pagina
+│   ├── StrikeCard.jsx    # Scheda singolo sciopero per la lista
+│   ├── FilterBar.jsx     # Filtri per città, settore e data
+│   ├── LineMap.jsx       # Componente per la mappa delle linee colpite (richiesto dai requisiti)
+│   └── VoteModal.jsx     # Modale per esprimere il voto di affidabilità sulla fonte
+├── context/              # Gestione dello stato globale (es. AuthContext per il JWT)
+├── pages/                # Pagine principali della web app (legate alle rotte)
+│   ├── Home.jsx          # Pagina principale con elenco scioperi e filtri
+│   ├── StrikeDetail.jsx  # Pagina di dettaglio dello sciopero (richiede autenticazione)
+│   ├── Login.jsx         # Pagina di accesso
+│   └── Register.jsx      # Pagina di registrazione
+├── App.jsx               # Configurazione delle rotte (React Router)
+└── main.jsx              # Punto di ingresso dell'applicazione
+
+4. I Componenti Chiave e il loro RuoloNavbar.jsx & AuthContext.jsx:Gestiscono lo stato dell'utente (loggato o non loggato). Se l'utente ha effettuato il login, mostra il nome utente e il tasto di logout; altrimenti mostra i link per accedere o registrarsi.Home.jsx & FilterBar.jsx:
+Costituiscono la schermata principale accessibile a tutti senza registrazione. Permettono di visualizzare l'elenco degli scioperi e filtrarli rapidamente per città (es. Milano, Roma) o tipologia di mezzo.   StrikeCard.jsx:Rappresenta il singolo sciopero nella lista. Mostra le informazioni basilari (data, orari, settore, città) e un pulsante "Visualizza dettagli" che reindirizza alla pagina protetta.StrikeDetail.jsx:
+La pagina avanzata che si attiva solo se l'utente è autenticato. Mostra la motivazione completa, i dati della fonte con il suo punteggio di affidabilità e il componente mappa.   LineMap.jsx:
+Il componente visivo che mostra le linee chiuse e aperte (es. le linee della metro di Milano colpite dallo sciopero), interpretando i dati JSON affected_lines provenienti dal backend.   VoteModal.jsx:
+Il pannello interattivo che consente agli utenti registrati di votare l'affidabilità della fonte (pollice su / pollice giù)[cite: 3], aggiornando in tempo reale il punteggio tramite le API.
+
+5. GESTIONE DELLO STATO E AUTENTICAZIONE (FRONTEND)
+
+5.1 Gestione del Token JWT nel Browser
+- Memorizzazione: Il token di accesso (`access_token`) restituito dal backend in fase di login viene salvato nel `localStorage` del browser per garantire la persistenza della sessione anche dopo la chiusura o il ricaricamento della pagina.
+- Invio delle richieste protette: Nelle chiamate HTTP verso gli endpoint che richiedono autenticazione (es. dettagli sciopero o invio voti), il frontend inserisce il token nell'header della richiesta utilizzando lo standard Bearer:
+  `Authorization: Bearer <token_jwt>`
+
+5.2 Implementazione dell'AuthContext (Stato Globale)
+- Ruolo: Un Context di React (`src/context/AuthContext.jsx`) gestisce centralmente lo stato dell'utente in tutta l'applicazione.
+- Stato gestito:
+  - `user`: Dati dell'utente autenticato o `null` se non loggato.
+  - `token`: Il token JWT recuperato o memorizzato nel `localStorage`.
+- Funzioni principali:
+  - `login(email, password)`: Effettua la richiesta POST al backend, salva il token e aggiorna lo stato globale.
+  - `logout()`: Rimuove il token dal `localStorage` e azzera lo stato utente.
+
+5.3 Protezione delle Rotte (Route Guard)
+- Logica: Un componente di protezione (`ProtectedRoute.jsx`) verifica la presenza di un token valido prima di consentire l'accesso alle sezioni protette dell'applicazione (come la visualizzazione dettagliata dello sciopero con la mappa e il sistema di voto).
+- Reindirizzamento: Gli utenti non autenticati che tentano di accedere a tali sezioni vengono reindirizzati automaticamente alla pagina di login.
+
+6. WIREFRAME E LAYOUT DELLA PAGINA PRINCIPALE (MOBILE-FIRST)
+La schermata principale (`Home.jsx`) è concepita per essere immediata, pulita e fruibile in pochi secondi, rispettando il requisito di trovare lo sciopero della propria città in massimo 2 click.
+
+6.1 Struttura Visiva dall'Alto verso il Basso (Mobile View)
++--------------------------------------------------+
+| [Menu]       SCIOPERI FACILI          [Login]    | -> Header fisso
++--------------------------------------------------+
+| 🔍 Cerca città o settore...                      | -> Barra di ricerca rapida
++--------------------------------------------------+
+| [ 🏙️ Milano ] [ 🏛️ Roma ] [ 🚆 Tutti ]          | -> Filtri rapidi a scorrimento
++--------------------------------------------------+
+| PROSSIMI SCIOPERI (3)                            | -> Titolo sezione / Contatore
++--------------------------------------------------+
+| +----------------------------------------------+ |
+| | 🔴 Milano - TPL (ATM)                       | | -> StrikeCard (Scheda Sciopero)
+| | 📅 Lun 15 Giu, 08:30 - 12:30                 | |
+| | 📝 Sciopero generale del trasporto locale.   | |
+| | -------------------------------------------- | |
+| | Fonte: ATM Milano (Affidabilità: 85%)        | |
+| | [🔒 Visualizza Dettagli e Mappa]             | | -> Richiede Autenticazione
+| +----------------------------------------------+ |
+|                                                  |
+| +----------------------------------------------+ |
+| | 🔴 Roma - Treno (Trenitalia)                | |
+| | 📅 Mer 17 Giu, 09:00 - 17:00                 | |
+| | 📝 Adesione personale ferroviario.           | |
+| | -------------------------------------------- | |
+| | Fonte: Ministero Mit (Affidabilità: 92%)     | |
+| | [🔒 Visualizza Dettagli e Mappa]             | |
+| +----------------------------------------------+ |
++--------------------------------------------------+
+| © 2026 Scioperi Facili - Gestione Fonti e Voti   | -> Footer
++--------------------------------------------------+
+
+6.2 Dettaglio dei Componenti della Home
+  1. **Header:**
+  * Contiene il logo/nome dell'app e il pulsante di autenticazione (`Login / Registrati`), che si trasforma nel nome utente e tasto `Logout` una volta effettuato l'accesso.
+
+  2. **Barra di Ricerca e Filtri:**
+  * Una casella di ricerca testuale per filtrare al volo la città o il settore.
+  * Bottoni a pillola orizzontali per selezionare con un solo tap le città principali o filtrare per categoria (TPL, Treni, Aerei).
+
+  3. **Lista delle Card (`StrikeCard.jsx`):**
+  * Ogni scheda presenta in modo chiaro lo stato d'allerta (es. pallino rosso), la città, il settore, le date/orari e la descrizione sintetica.
+  * Mostra la fonte d'origine e la percentuale di affidabilità calcolata dalla community.
+  * **Call to Action protetta:** Il pulsante per i dettagli avanzati e la mappa delle linee colpite mostra un'icona a lucchetto se l'utente non è loggato, invitandolo all'autenticazione.
+
+7. STRUTTURAZIONE DEL BACKEND (PYTHON / FASTAPI)
+backend/
+├── main.py                 # Punto di ingresso dell'applicazione FastAPI
+├── database.py             # Configurazione e connessione al database PostgreSQL (SQLAlchemy)
+├── requirements.txt        # Elenco delle dipendenze Python (FastAPI, Uvicorn, BeautifulSoup, ecc.)
+├── models/                 # Modelli ORM del Database (rappresentano le tabelle)
+│   ├── __init__.py
+│   ├── user.py             # Modello tabella utenti
+│   ├── strike.py           # Modello tabella scioperi
+│   └── source.py           # Modello tabella fonti e voti
+├── schemas/                # Schemi Pydantic (validazione dati in entrata e uscita dalle API)
+│   ├── __init__.py
+│   ├── user_schema.py
+│   ├── strike_schema.py
+│   └── vote_schema.py
+├── routers/                # Endpoint delle API suddivisi per risorsa
+│   ├── __init__.py
+│   ├── auth.py             # Rotte di registrazione e login (/api/auth/...)
+│   ├── strikes.py          # Rotte per gli scioperi (/api/scioperi/...)
+│   └── sources.py          # Rotte per fonti e voti (/api/fonti/...)
+└── scraper/                # Il motore di raccolta dati automatico
+    ├── __init__.py
+    ├── spider.py           # Logica di scraping (richieste web ed estrazione dati)
+    └── scheduler.py        # Gestione dell'esecuzione periodica (es. esecuzione ogni 4 ore)
