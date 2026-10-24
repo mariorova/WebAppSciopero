@@ -25,7 +25,6 @@ function App() {
   const [filterSector, setFilterSector] = useState('');
   const [filterDate, setFilterDate] = useState('');
 
-  // Stati preferenze passati al dropdown della navbar
   const [selectedSectors, setSelectedSectors] = useState(['TPL', 'Ferroviario']);
   const [selectedCities, setSelectedCities] = useState(['Milano', 'Roma']);
 
@@ -33,6 +32,20 @@ function App() {
   const [isLoginMode, setIsLoginMode] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  // Cattura il token di ritorno da OAuth (Google o Meta) nell'URL
+  useEffect(() => {
+    const queryParams = new URLSearchParams(window.location.search);
+    const token = queryParams.get('token');
+    const userEmail = queryParams.get('email');
+
+    if (token && userEmail) {
+      setIsLoggedIn(true);
+      setEmail(userEmail);
+      window.history.replaceState({}, document.title, window.location.pathname);
+      alert(`Accesso social effettuato con successo per: ${userEmail}`);
+    }
+  }, []);
 
   useEffect(() => {
     getStrikes()

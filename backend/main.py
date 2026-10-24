@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 # Importa database e modelli per assicurarsi che le tabelle vengano create
 from database import engine, Base
@@ -28,7 +29,13 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configurazione CORS esplicita per risolvere il blocco del browser (porta 5173)
+# Aggiungiamo il SessionMiddleware richiesto da Authlib per il flusso OAuth
+app.add_middleware(
+    SessionMiddleware, 
+    secret_key="chiave_segreta_super_sicura_da_cambiare"
+)
+
+# Configurazione CORS esplicita per risolvere il blocco del browser (porta 5173)[cite: 21]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -37,7 +44,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inclusione dei router con il prefisso /api per allinearli al frontend
+# Inclusione dei router con il prefisso /api per allinearli al frontend[cite: 21]
 app.include_router(auth.router, prefix="/api/auth", tags=["Autenticazione"])
 app.include_router(strikes.router, prefix="/api/scioperi", tags=["Scioperi"])
 app.include_router(sources.router, prefix="/api/sources", tags=["Fonti"])
