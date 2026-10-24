@@ -19,9 +19,14 @@ export default function StrikesList({
         return matchCity && matchSector && matchLine;
     });
 
-    // Suddivisione per mostrare i test live di Milano e gli altri
-    const activeStrikesNow = filteredStrikes.filter(s => s.id_sciopero >= 63 || (s.citta && s.citta.toLowerCase().includes('milano')));
-    const otherStrikes = filteredStrikes.filter(s => s.id_sciopero < 63 && (!s.citta || !s.citta.toLowerCase().includes('milano')));
+    // Allineato perfettamente a HomeMap per catturare gli stessi 3 scioperi live
+    const activeStrikesNow = filteredStrikes.filter((strike) => {
+        return strike.id_sciopero >= 63 || (strike.citta && (strike.citta.toLowerCase().includes('milano') || strike.citta.toLowerCase().includes('roma')));
+    });
+
+    const otherStrikes = filteredStrikes.filter((strike) => {
+        return strike.id_sciopero < 63 && (!strike.citta || (!strike.citta.toLowerCase().includes('milano') && !strike.citta.toLowerCase().includes('roma')));
+    });
 
     return (
         <div style={{ width: '100%', maxWidth: '1000px', display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '0 auto' }}>

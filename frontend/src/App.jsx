@@ -18,7 +18,12 @@ function App() {
   const [error, setError] = useState(null);
 
   const [activeTab, setActiveTab] = useState('home');
-  const [isDarkMode, setIsDarkMode] = useState(true);
+
+  // Rileva prioritariamente il tema del sistema operativo del dispositivo (dark/light)
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   const [filterCity, setFilterCity] = useState('');
@@ -32,6 +37,11 @@ function App() {
   const [isLoginMode, setIsLoginMode] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  // Sincronizza il tema salvato nel localStorage quando l'utente lo cambia manualmente via UI
+  useEffect(() => {
+    localStorage.setItem('scioperifacili_theme', isDarkMode ? 'dark' : 'light');
+  }, [isDarkMode]);
 
   // Cattura il token di ritorno da OAuth nell'URL
   useEffect(() => {
@@ -50,7 +60,6 @@ function App() {
   useEffect(() => {
     getStrikes()
       .then((data) => {
-        // Correggendo qui: 'data' è già l'array pulito restituito da getStrikes()
         setStrikes(Array.isArray(data) ? data : []);
         setLoading(false);
       })

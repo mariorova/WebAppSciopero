@@ -76,13 +76,15 @@ export default function NotificationDropdown({ strikes = [], selectedSectors, se
                 )}
             </button>
 
-            {/* Menu a tendina (Dropdown) */}
+            {/* Menu a tendina (Dropdown) adattato dinamicamente al tema */}
             {isOpen && (
                 <div style={{
                     position: 'absolute', right: 0, top: '48px', width: '360px',
-                    maxHeight: '440px', overflowY: 'auto', background: 'var(--card-bg, #1a1a1a)',
+                    maxHeight: '440px', overflowY: 'auto',
+                    background: 'var(--card-bg, #ffffff)', // Adattivo al tema chiaro/scuro
+                    color: 'inherit',
                     border: '1px solid var(--border)', borderRadius: '16px',
-                    boxShadow: '0 12px 35px rgba(0,0,0,0.4)', zIndex: 1000, padding: '20px',
+                    boxShadow: '0 12px 35px rgba(0,0,0,0.15)', zIndex: 1000, padding: '20px',
                     display: 'flex', flexDirection: 'column', gap: '14px', textAlign: 'left'
                 }}>
                     {/* Header del menu */}
@@ -92,7 +94,7 @@ export default function NotificationDropdown({ strikes = [], selectedSectors, se
                             <span style={{ fontSize: '15px', fontWeight: '700', letterSpacing: '-0.2px' }}>Centro Avvisi</span>
                         </div>
                         <span style={{ fontSize: '12px', fontWeight: '500', padding: '2px 8px', borderRadius: '10px', background: 'rgba(220, 38, 38, 0.1)', color: 'var(--accent, #dc2626)' }}>
-                            {unreadStrikes.length} {unreadStrikes.length === 1 ? 'da leggere' : 'da leggere'}
+                            {unreadStrikes.length} da leggere
                         </span>
                     </div>
 
@@ -107,7 +109,7 @@ export default function NotificationDropdown({ strikes = [], selectedSectors, se
                                         onClick={() => handleNotificationClick(strike.id_sciopero)}
                                         style={{
                                             padding: '12px 14px', borderRadius: '10px',
-                                            background: isUnread ? 'rgba(220, 38, 38, 0.05)' : 'rgba(128,128,128,0.02)',
+                                            background: isUnread ? 'rgba(220, 38, 38, 0.05)' : 'rgba(128,128,128,0.05)',
                                             border: `1px solid ${isUnread ? 'rgba(220, 38, 38, 0.3)' : 'var(--border)'}`,
                                             display: 'flex', flexDirection: 'column', gap: '6px',
                                             cursor: 'pointer', transition: 'all 0.2s ease'

@@ -67,9 +67,9 @@ export default function AuthModal({
             display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000
         }}>
             <div style={{
-                background: 'var(--card-bg, #1e1e1e)', border: '1px solid var(--border)',
+                background: 'var(--card-bg, #ffffff)', color: 'inherit', border: '1px solid var(--border)',
                 borderRadius: '20px', width: '100%', maxWidth: '420px', padding: '30px',
-                boxShadow: '0 15px 35px rgba(0,0,0,0.5)', position: 'relative', display: 'flex', flexDirection: 'column', gap: '20px'
+                boxShadow: '0 15px 35px rgba(0,0,0,0.15)', position: 'relative', display: 'flex', flexDirection: 'column', gap: '20px'
             }}>
                 <button
                     onClick={() => setIsAuthOpen(false)}
@@ -91,7 +91,7 @@ export default function AuthModal({
                                 onClick={handleLogout}
                                 style={{
                                     padding: '12px', borderRadius: '10px', border: '1px solid var(--border)',
-                                    background: 'rgba(255, 255, 255, 0.08)', fontWeight: '600', cursor: 'pointer', color: 'inherit'
+                                    background: 'rgba(128, 128, 128, 0.08)', fontWeight: '600', cursor: 'pointer', color: 'inherit'
                                 }}
                             >
                                 Esci (Logout)
@@ -124,9 +124,8 @@ export default function AuthModal({
                             </div>
                         )}
 
-                        {/* Pulsanti Social Login con loghi SVG ufficiali */}
+                        {/* Pulsanti Social Login */}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                            {/* Pulsante Google */}
                             <button
                                 type="button"
                                 onClick={() => { window.location.href = "http://localhost:8000/api/auth/google/login"; }}
@@ -145,7 +144,6 @@ export default function AuthModal({
                                 Accedi con Google
                             </button>
 
-                            {/* Pulsante Facebook */}
                             <button
                                 type="button"
                                 onClick={() => { window.location.href = "http://localhost:8000/api/auth/meta/login"; }}
