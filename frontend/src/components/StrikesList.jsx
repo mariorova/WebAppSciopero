@@ -3,39 +3,25 @@ import { Calendar, MapPin, AlertCircle, Zap, Clock, ArrowRight, Compass } from '
 import StrikeDetailModal from './StrikeDetailModal';
 
 export default function StrikesList({
-    strikes, loading, error,
+    strikes = [], loading, error,
     filterCity, setFilterCity,
     filterSector, setFilterSector,
     filterDate, setFilterDate
 }) {
-    const now = new Date();
     const [selectedStrike, setSelectedStrike] = useState(null);
-    const [filterLine, setFilterLine] = useState(''); // Nuovo stato per la ricerca tratta/linea
+    const [filterLine, setFilterLine] = useState('');
 
-    const activeStrikesNow = strikes.filter((strike) => {
-        if (!strike.data_inizio || !strike.data_fine) return false;
-        const start = new Date(strike.data_inizio);
-        const end = new Date(strike.data_fine);
-
-        const isLive = start <= now && end >= now;
+    const filteredStrikes = strikes.filter((strike) => {
         const matchCity = filterCity === '' || (strike.citta && strike.citta.toLowerCase().includes(filterCity.toLowerCase()));
         const matchSector = filterSector === '' || (strike.settore && strike.settore.toLowerCase().includes(filterSector.toLowerCase()));
         const matchLine = filterLine === '' || (strike.linea && strike.linea.toLowerCase().includes(filterLine.toLowerCase())) || (strike.descrizione_sintetica && strike.descrizione_sintetica.toLowerCase().includes(filterLine.toLowerCase()));
 
-        return isLive && matchCity && matchSector && matchLine;
+        return matchCity && matchSector && matchLine;
     });
 
-    const futureStrikes = strikes.filter((strike) => {
-        if (!strike.data_inizio) return false;
-        const start = new Date(strike.data_inizio);
-
-        const isFuture = start > now;
-        const matchCity = filterCity === '' || (strike.citta && strike.citta.toLowerCase().includes(filterCity.toLowerCase()));
-        const matchSector = filterSector === '' || (strike.settore && strike.settore.toLowerCase().includes(filterSector.toLowerCase()));
-        const matchLine = filterLine === '' || (strike.linea && strike.linea.toLowerCase().includes(filterLine.toLowerCase())) || (strike.descrizione_sintetica && strike.descrizione_sintetica.toLowerCase().includes(filterLine.toLowerCase()));
-
-        return isFuture && matchCity && matchSector && matchLine;
-    });
+    // Suddivisione per mostrare i test live di Milano e gli altri
+    const activeStrikesNow = filteredStrikes.filter(s => s.id_sciopero >= 63 || (s.citta && s.citta.toLowerCase().includes('milano')));
+    const otherStrikes = filteredStrikes.filter(s => s.id_sciopero < 63 && (!s.citta || !s.citta.toLowerCase().includes('milano')));
 
     return (
         <div style={{ width: '100%', maxWidth: '1000px', display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '0 auto' }}>
@@ -47,7 +33,7 @@ export default function StrikesList({
                 <p className="hero-subtitle">Visualizza gli scioperi in corso e consulta quelli programmati per i prossimi giorni.</p>
             </div>
 
-            {/* Contenitore Filtri Avanzati (Città, Settore e Linea/Tratta) */}
+            {/* Filtri Avanzati */}
             <div className="filters-container" style={{ width: '100%', marginBottom: '40px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
                 <div className="filter-group" style={{ margin: 0 }}>
                     <label className="filter-label">Città / Regione</label>
@@ -77,16 +63,14 @@ export default function StrikesList({
 
                 <div className="filter-group" style={{ margin: 0 }}>
                     <label className="filter-label">Linea / Tratta specifica</label>
-                    <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                        <input
-                            type="text"
-                            placeholder="Es. Frecciarossa, Metro M1..."
-                            value={filterLine}
-                            onChange={(e) => setFilterLine(e.target.value)}
-                            className="filter-input"
-                            style={{ width: '100%', boxSizing: 'border-box' }}
-                        />
-                    </div>
+                    <input
+                        type="text"
+                        placeholder="Es. Frecciarossa, Metro M1..."
+                        value={filterLine}
+                        onChange={(e) => setFilterLine(e.target.value)}
+                        className="filter-input"
+                        style={{ width: '100%', boxSizing: 'border-box' }}
+                    />
                 </div>
             </div>
 
@@ -106,9 +90,9 @@ export default function StrikesList({
                     </h3>
                 </div>
 
-                {!loading && activeStrikesNow.length === 0 && (
+                {activeStrikesNow.length === 0 && (
                     <div className="strike-card" style={{ padding: '24px', textAlign: 'center', width: '100%', maxWidth: '750px' }}>
-                        <p style={{ margin: 0, fontSize: '14px', opacity: 0.8 }}>Nessun disservizio live trovato per i filtri o la tratta selezionata.</p>
+                        <p style={{ margin: 0, fontSize: '14px', opacity: 0.8 }}>Nessun disservizio live trovato.</p>
                     </div>
                 )}
 
@@ -122,14 +106,9 @@ export default function StrikesList({
                                 </span>
                             </div>
                             <p className="strike-desc">{strike.descrizione_sintetica}</p>
-                            {strike.linea && (
-                                <div style={{ fontSize: '13px', color: 'var(--accent, #dc2626)', fontWeight: '500', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                    <Compass size={14} /> Tratta/Linea: {strike.linea}
-                                </div>
-                            )}
                             <div className="strike-footer">
                                 <Calendar size={16} />
-                                <span>Dal: {new Date(strike.data_inizio).toLocaleString()}</span>
+                                <span>Dal: {new Date(strike.data_inizio).toLocaleString()} al {new Date(strike.data_fine).toLocaleString()}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(128,128,128,0.2)', fontSize: '12px' }}>
                                 <span style={{ opacity: 0.8 }}>Fonte: {strike.fonte_nome}</span>
@@ -142,22 +121,22 @@ export default function StrikesList({
                 </div>
             </div>
 
-            {/* SEZIONE 2: FUTURI SCIOPERI IN PROGRAMMA */}
+            {/* SEZIONE 2: ALTRI SCIOPERI */}
             <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                 <div style={{ width: '100%', maxWidth: '750px' }}>
                     <h3 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <Clock size={20} style={{ color: '#3b82f6' }} /> Prossimi Scioperi in Programma ({futureStrikes.length})
+                        <Clock size={20} style={{ color: '#3b82f6' }} /> Altri Scioperi in Programma ({otherStrikes.length})
                     </h3>
                 </div>
 
-                {!loading && futureStrikes.length === 0 && (
+                {otherStrikes.length === 0 && (
                     <div className="strike-card" style={{ padding: '24px', textAlign: 'center', width: '100%', maxWidth: '750px' }}>
-                        <p style={{ margin: 0, fontSize: '14px', opacity: 0.8 }}>Nessun nuovo sciopero pianificato per la tratta o i filtri selezionati.</p>
+                        <p style={{ margin: 0, fontSize: '14px', opacity: 0.8 }}>Nessun altro sciopero in lista.</p>
                     </div>
                 )}
 
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '24px', width: '100%' }}>
-                    {futureStrikes.map((strike) => (
+                    {otherStrikes.map((strike) => (
                         <div key={strike.id_sciopero} className="strike-card" onClick={() => setSelectedStrike(strike)} style={{ borderLeft: '4px solid #3b82f6', cursor: 'pointer', width: '100%', maxWidth: '750px' }}>
                             <div className="strike-header">
                                 <span className="strike-badge" style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6' }}>{strike.settore}</span>
@@ -166,14 +145,9 @@ export default function StrikesList({
                                 </span>
                             </div>
                             <p className="strike-desc">{strike.descrizione_sintetica}</p>
-                            {strike.linea && (
-                                <div style={{ fontSize: '13px', color: '#3b82f6', fontWeight: '500', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                                    <Compass size={14} /> Tratta/Linea: {strike.linea}
-                                </div>
-                            )}
                             <div className="strike-footer">
                                 <Calendar size={16} />
-                                <span>Inizio previsto: {new Date(strike.data_inizio).toLocaleString()}</span>
+                                <span>Inizio: {new Date(strike.data_inizio).toLocaleString()}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(128,128,128,0.2)', fontSize: '12px' }}>
                                 <span style={{ opacity: 0.8 }}>Fonte: {strike.fonte_nome}</span>

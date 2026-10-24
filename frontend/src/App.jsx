@@ -33,7 +33,7 @@ function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  // Cattura il token di ritorno da OAuth (Google o Meta) nell'URL
+  // Cattura il token di ritorno da OAuth nell'URL
   useEffect(() => {
     const queryParams = new URLSearchParams(window.location.search);
     const token = queryParams.get('token');
@@ -50,7 +50,8 @@ function App() {
   useEffect(() => {
     getStrikes()
       .then((data) => {
-        setStrikes(data.results || []);
+        // Correggendo qui: 'data' è già l'array pulito restituito da getStrikes()
+        setStrikes(Array.isArray(data) ? data : []);
         setLoading(false);
       })
       .catch((err) => {

@@ -2,22 +2,40 @@ const API_URL = 'http://localhost:8000'; // Modifica se usi un URL di produzione
 
 export async function getStrikes() {
     try {
-        const response = await fetch(`${API_URL}/api/scioperi/`);
+        const response = await fetch(`${API_URL}/api/scioperi`, {
+            method: 'GET',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        });
+
         if (!response.ok) {
-            throw new Error('Errore nel recupero degli scioperi');
+            throw new Error(`Errore HTTP: ${response.status}`);
         }
-        return await response.json();
+
+        const data = await response.json();
+        console.log("Dati scioperi ricevuti dall'API:", data);
+
+        // Se il backend restituisce l'oggetto paginato, restituisce l'array dentro 'results'
+        if (data && Array.isArray(data.results)) {
+            return data.results;
+        }
+
+        // Fallback nel caso in cui sia già un array
+        if (Array.isArray(data)) {
+            return data;
+        }
+
+        return [];
     } catch (error) {
-        console.error("API error:", error);
-        throw error;
+        console.error("API error in getStrikes:", error);
+        return [];
     }
 }
 
 export async function registerUser(email, password) {
     try {
-        // Generiamo uno username di default basato sulla parte iniziale dell'email
         const username = email.split('@')[0];
-
         const response = await fetch(`${API_URL}/api/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from typing import Optional
+from datetime import datetime
 from jose import jwt, JWTError
 
 from database import get_db
@@ -41,16 +42,25 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 def get_scioperi(
     citta: Optional[str] = Query(None, description="Filtra per città (es. Milano)"),
     settore: Optional[str] = Query(None, description="Filtra per settore (es. TPL)"),
+    attivi_ora: Optional[bool] = Query(False, description="Filtra solo gli scioperi attivi in questo momento"),
     page: int = Query(0, ge=0),
     size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db)
 ):
     # La lista base è visibile anche senza login[cite: 3]
     query = db.query(Strike)
+    
     if citta:
         query = query.filter(Strike.city.ilike(f"%{citta}%"))
     if settore:
         query = query.filter(Strike.sector.ilike(f"%{settore}%"))
+        
+    if attivi_ora:
+        now = datetime.now()
+        query = query.filter(Strike.start_time <= now, Strike.end_time >= now)
+    
+    # Ordinamento per ID decrescente e data, così i test inseriti compaiono subito in prima pagina
+    query = query.order_by(Strike.start_time.desc(), Strike.id.desc())
     
     total = query.count()
     strikes = query.offset(page * size).limit(size).all()
@@ -63,7 +73,7 @@ def get_scioperi(
             "settore": s.sector,
             "data_inizio": s.start_time,
             "data_fine": s.end_time,
-            "descrizione_sintetica": s.description[:120] + "..." if len(s.description) > 120 else s.description,
+            "descrizione_sintetica": s.description[:120] + "..." if s.description and len(s.description) > 120 else (s.description or ""),
             "fonte_nome": s.source.name if s.source else "N/D",
             "scioperoLNK": f"/api/scioperi/{s.id}"
         })
