@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Calendar, MapPin, AlertCircle, Zap, Clock, ArrowRight, Compass } from 'lucide-react';
+import { Calendar, MapPin, AlertCircle, Zap, Clock, ArrowRight } from 'lucide-react';
 import StrikeDetailModal from './StrikeDetailModal';
 
 export default function StrikesList({
@@ -11,22 +11,18 @@ export default function StrikesList({
     const [selectedStrike, setSelectedStrike] = useState(null);
     const [filterLine, setFilterLine] = useState('');
 
+    // Filtro pulito e permissivo basato sui campi effettivi restituiti dall'API
     const filteredStrikes = strikes.filter((strike) => {
-        const matchCity = filterCity === '' || (strike.citta && strike.citta.toLowerCase().includes(filterCity.toLowerCase()));
-        const matchSector = filterSector === '' || (strike.settore && strike.settore.toLowerCase().includes(filterSector.toLowerCase()));
-        const matchLine = filterLine === '' || (strike.linea && strike.linea.toLowerCase().includes(filterLine.toLowerCase())) || (strike.descrizione_sintetica && strike.descrizione_sintetica.toLowerCase().includes(filterLine.toLowerCase()));
+        const matchCity = !filterCity || (strike.citta && strike.citta.toLowerCase().includes(filterCity.toLowerCase()));
+        const matchSector = !filterSector || (strike.settore && strike.settore.toLowerCase().includes(filterSector.toLowerCase()));
+        const matchLine = !filterLine || (strike.descrizione_sintetica && strike.descrizione_sintetica.toLowerCase().includes(filterLine.toLowerCase()));
 
         return matchCity && matchSector && matchLine;
     });
 
-    // Allineato perfettamente a HomeMap per catturare gli stessi 3 scioperi live
-    const activeStrikesNow = filteredStrikes.filter((strike) => {
-        return strike.id_sciopero >= 63 || (strike.citta && (strike.citta.toLowerCase().includes('milano') || strike.citta.toLowerCase().includes('roma')));
-    });
-
-    const otherStrikes = filteredStrikes.filter((strike) => {
-        return strike.id_sciopero < 63 && (!strike.citta || (!strike.citta.toLowerCase().includes('milano') && !strike.citta.toLowerCase().includes('roma')));
-    });
+    // Divisione sicura basata sul campo 'stato' calcolato dal backend
+    const activeStrikesNow = filteredStrikes.filter((strike) => strike.stato === 'in_corso');
+    const otherStrikes = filteredStrikes.filter((strike) => strike.stato !== 'in_corso');
 
     return (
         <div style={{ width: '100%', maxWidth: '1000px', display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '0 auto' }}>
@@ -67,10 +63,10 @@ export default function StrikesList({
                 </div>
 
                 <div className="filter-group" style={{ margin: 0 }}>
-                    <label className="filter-label">Linea / Tratta specifica</label>
+                    <label className="filter-label">Parola chiave / Tratta</label>
                     <input
                         type="text"
-                        placeholder="Es. Frecciarossa, Metro M1..."
+                        placeholder="Es. Trenord, ATM, Metro..."
                         value={filterLine}
                         onChange={(e) => setFilterLine(e.target.value)}
                         className="filter-input"
@@ -126,7 +122,7 @@ export default function StrikesList({
                 </div>
             </div>
 
-            {/* SEZIONE 2: ALTRI SCIOPERI */}
+            {/* SEZIONE 2: ALTRI SCIOPERI IN PROGRAMMA */}
             <div style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                 <div style={{ width: '100%', maxWidth: '750px' }}>
                     <h3 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>

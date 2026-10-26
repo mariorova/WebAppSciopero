@@ -5,12 +5,14 @@ import StrikeDetailModal from './StrikeDetailModal';
 export default function HomeMap({ setActiveTab, setFilterCity, strikes = [], isLoggedIn }) {
     const [selectedStrike, setSelectedStrike] = useState(null);
     const [votedStrikes, setVotedStrikes] = useState({});
+    const now = new Date();
 
-    // Usiamo direttamente tutti gli scioperi o filtriamo quelli validi per la visualizzazione in home
+    // Calcola lo stato in tempo reale basandosi sulle date di inizio e fine
     const activeStrikesNow = strikes.filter((strike) => {
         if (!strike.data_inizio || !strike.data_fine) return false;
-        // Mostriamo i record di test live (id >= 63) o quelli con città Milano/Roma per popolare subito la mappa
-        return strike.id_sciopero >= 63 || (strike.citta && (strike.citta.toLowerCase().includes('milano') || strike.citta.toLowerCase().includes('roma')));
+        const start = new Date(strike.data_inizio);
+        const end = new Date(strike.data_fine);
+        return start <= now && end >= now;
     });
 
     const handleStrikeClick = (strike) => {
