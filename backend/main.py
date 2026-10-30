@@ -10,17 +10,19 @@ from models import user, strike, source
 # Importa i router del progetto
 from routers import auth, sources, strikes
 # Importa lo scheduler dello spider
-from scraper.scheduler import start_scheduler
+from scraper.scheduler import start_scheduler, stop_scheduler
 
-# Crea le tabelle nel database SQLite all'avvio se non esistono già
+# Crea le tabelle nel database all'avvio se non esistono già
 Base.metadata.create_all(bind=engine)
 
 # Definizione del ciclo di vita per avviare lo spider in background all'avvio dell'app
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Avvia lo scheduler in background
+    # Avvia lo spider subito in background e pianifica l'esecuzione ogni 2 ore
     start_scheduler()
     yield
+    # Ferma lo scheduler alla chiusura del server
+    stop_scheduler()
 
 app = FastAPI(
     title="WebApp Sciopero Mezzi Italia",
@@ -35,7 +37,7 @@ app.add_middleware(
     secret_key="chiave_segreta_super_sicura_da_cambiare"
 )
 
-# Configurazione CORS esplicita per risolvere il blocco del browser (porta 5173)[cite: 21]
+# Configurazione CORS esplicita per risolvere il blocco del browser (porta 5173)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -44,7 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inclusione dei router con il prefisso /api per allinearli al frontend[cite: 21]
+# Inclusione dei router con il prefisso /api per allinearli al frontend
 app.include_router(auth.router, prefix="/api/auth", tags=["Autenticazione"])
 app.include_router(strikes.router, prefix="/api/scioperi", tags=["Scioperi"])
 app.include_router(sources.router, prefix="/api/sources", tags=["Fonti"])
