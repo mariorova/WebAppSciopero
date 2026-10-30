@@ -80,3 +80,6 @@ source venv/bin/activate
 
 AVVIO FRONTEND: 
 npm run dev
+
+
+MANCA DA SISTEMARE SPIDER DI ATM CHE NON MOSTRA NULLA

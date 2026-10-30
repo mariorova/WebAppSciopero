@@ -6,53 +6,85 @@ from models.source import Source
 from database import SessionLocal
 from playwright.async_api import async_playwright
 
-def parse_italian_date(date_str: str, is_end: bool = False) -> datetime:
-    """Converte una data dal formato GG/MM/AAAA in un oggetto datetime reale."""
-    match = re.search(r'(\d{2})/(\d{2})/(\d{4})', date_str)
-    if match:
-        day, month, year = map(int, match.groups())
-        if is_end:
-            return datetime(year, month, day, 23, 59, 59)
-        return datetime(year, month, day, 0, 0, 0)
-    now = datetime.now()
-    return now + timedelta(days=1) if not is_end else now + timedelta(days=1, hours=23)
+MESI_IT = {
+    "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
+    "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
+    "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12
+}
 
-def normalize_sector(raw_sector: str, full_text: str) -> str:
-    """Normalizza il settore per i filtri del frontend (TPL, Ferroviario, Aereo, Marittimo)."""
-    s = (raw_sector + " " + full_text).lower()
-    if "aereo" in s or "aeroport" in s or "enav" in s or "aviation" in s:
+def extract_dates_from_text(text: str, default_days_offset: int = 1):
+    """Estrae le date di inizio e fine da un testo (supporta GG/MM/AAAA e '29 e 30 ottobre')."""
+    now = datetime.now()
+    
+    # 1. Cerca formato GG/MM/AAAA
+    slash_dates = re.findall(r'(\d{2})/(\d{2})/(\d{4})', text)
+    if slash_dates:
+        d1, m1, y1 = map(int, slash_dates[0])
+        start_dt = datetime(y1, m1, d1, 0, 0, 0)
+        if len(slash_dates) > 1:
+            d2, m2, y2 = map(int, slash_dates[1])
+            end_dt = datetime(y2, m2, d2, 23, 59, 59)
+        else:
+            end_dt = datetime(y1, m1, d1, 23, 59, 59)
+        return start_dt, end_dt
+
+    # 2. Cerca formato testuale italiano (es. "29 e 30 ottobre", "29-30 ottobre", "30 ottobre")
+    text_low = text.lower()
+    for nome_mese, num_mese in MESI_IT.items():
+        if nome_mese in text_low:
+            range_match = re.search(rf'(\d{{1,2}})\s*(?:e|-|/|\s+al\s+)\s*(\d{{1,2}})\s+{nome_mese}', text_low)
+            if range_match:
+                d1, d2 = map(int, range_match.groups())
+                year = now.year
+                return datetime(year, num_mese, d1, 0, 0, 0), datetime(year, num_mese, d2, 23, 59, 59)
+            
+            single_match = re.search(rf'(\d{{1,2}})\s+{nome_mese}', text_low)
+            if single_match:
+                d1 = int(single_match.group(1))
+                year = now.year
+                return datetime(year, num_mese, d1, 0, 0, 0), datetime(year, num_mese, d1, 23, 59, 59)
+
+    # 3. Fallback futuro se non ci sono date esplicite nel titolo dell'avviso
+    start_fallback = now + timedelta(days=default_days_offset)
+    end_fallback = start_fallback.replace(hour=23, minute=59, second=59)
+    return start_fallback, end_fallback
+
+def classify_sector(raw_sector: str, full_text: str) -> str:
+    """Normalizza il settore per allinearlo ai filtri del frontend."""
+    combined = f"{raw_sector} {full_text}".lower()
+    if any(k in combined for k in ["aereo", "aeroport", "enav", "aviation", "volo"]):
         return "Aereo"
-    if "ferrovi" in s or "trenitalia" in s or "trenord" in s or "italo" in s or "rfi" in s:
+    if any(k in combined for k in ["ferrovi", "trenitalia", "trenord", "italo", "rfi"]):
         return "Ferroviario"
-    if "marittim" in s or "portual" in s or "porti" in s or "navigazione" in s:
+    if any(k in combined for k in ["marittim", "portual", "porti", "navigazione", "traghett"]):
         return "Marittimo"
-    if "trasporto pubblico locale" in s or "tpl" in s or "atm" in s or "atac" in s or "campania" in s or "autobus" in s:
+    if any(k in combined for k in ["trasporto pubblico locale", "tpl", "atm", "atac", "campania", "autobus", "metro"]):
         return "TPL"
-    if "autostrad" in s or "stradal" in s:
+    if any(k in combined for k in ["autostrad", "stradal", "viabilit"]):
         return "Autostrade / Viabilità"
-    if "generale" in s or "plurisettoriale" in s:
+    if any(k in combined for k in ["generale", "plurisettoriale"]):
         return "Sciopero Generale"
     return raw_sector.strip().capitalize() if raw_sector.strip() else "Trasporto Pubblico"
 
-def extract_location(cells_text: list, description: str) -> str:
-    """Estrae la città o la regione dal testo dello sciopero."""
-    luoghi_noti = [
+def find_city(description: str) -> str:
+    """Rileva la città o la regione menzionata nel testo dello sciopero."""
+    cities = [
         "Milano", "Roma", "Napoli", "Torino", "Bologna", "Firenze", "Pisa", "Bari", 
         "Venezia", "Genova", "Palermo", "Catania", "Verona", "Reggio Emilia", "Rimini",
         "Lombardia", "Lazio", "Toscana", "Campania", "Piemonte", "Emilia-Romagna", "Puglia", "Sicilia", "Veneto"
     ]
-    trovati = [luogo for luogo in luoghi_noti if re.search(rf'\b{luogo}\b', description, re.IGNORECASE)]
-    if trovati:
-        return " / ".join(dict.fromkeys(trovati[:2]))
+    found = [c for c in cities if re.search(rf'\b{c}\b', description, re.IGNORECASE)]
+    if found:
+        return " / ".join(dict.fromkeys(found[:2]))
     return "Nazionale"
 
 async def run_spider():
-    print("--- AVVIO SPIDER: Estrazione strutturata da MIT, ATM e Trenord ---")
+    print("--- AVVIO SPIDER: Scansione MIT, ATM (Homepage) e Trenord ---")
     db: Session = SessionLocal()
     
-    mit_strikes = []
-    atm_strikes = []
-    trenord_strikes = []
+    mit_list = []
+    atm_list = []
+    trenord_list = []
 
     try:
         async with async_playwright() as p:
@@ -61,197 +93,153 @@ async def run_spider():
                 args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
             )
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
             page = await context.new_page()
 
-            # --- 1. PORTALE UFFICIALE MIT ---
+            # --- 1. PORTALE MIT ---
             try:
-                mit_target_url = "https://scioperi.mit.gov.it/mit2/public/scioperi"
-                await page.goto(mit_target_url, timeout=45000)
-                await page.wait_for_timeout(4500)
-                
-                current_mit_url = page.url
-                print(f"URL attivo catturato per MIT: {current_mit_url}")
+                await page.goto("https://scioperi.mit.gov.it/mit2/public/scioperi", timeout=45000)
+                await page.wait_for_timeout(4000)
+                mit_url = page.url
 
                 rows = await page.locator("table tbody tr").all()
-                print(f"Righe trovate nella tabella MIT: {len(rows)}")
-
                 for row in rows:
                     cells = await row.locator("td").all()
                     if len(cells) >= 4:
-                        raw_cells = [await cell.inner_text() for cell in cells]
-                        # Rimuove le celle completamente vuote all'inizio (es. colonna 0 icona nel MIT)
-                        cleaned = [re.sub(r'\s+', ' ', txt).strip() for txt in raw_cells if re.sub(r'\s+', ' ', txt).strip()]
+                        raw_texts = [await c.inner_text() for c in cells]
+                        clean_cells = [re.sub(r'\s+', ' ', t).strip() for t in raw_texts if re.sub(r'\s+', ' ', t).strip()]
                         
-                        if len(cleaned) < 4:
+                        if len(clean_cells) < 4:
                             continue
 
-                        # Trova dinamicamente le prime due date GG/MM/AAAA nella riga
-                        row_joined = " - ".join(cleaned)
-                        dates_found = re.findall(r'\d{2}/\d{2}/\d{4}', row_joined)
-                        if not dates_found:
+                        row_str = " - ".join(clean_cells)
+                        if not re.search(r'\d{2}/\d{2}/\d{4}', row_str):
                             continue
 
-                        start_dt = parse_italian_date(dates_found[0], is_end=False)
-                        end_dt = parse_italian_date(dates_found[1] if len(dates_found) > 1 else dates_found[0], is_end=True)
+                        start_dt, end_dt = extract_dates_from_text(row_str)
+                        sindacati = clean_cells[2] if len(clean_cells) > 2 else "N/D"
+                        settore_mit = clean_cells[3] if len(clean_cells) > 3 else ""
+                        ente = clean_cells[4] if len(clean_cells) > 4 else ""
+                        modalita = clean_cells[5] if len(clean_cells) > 5 and not re.search(r'\d{2}/\d{2}/\d{4}', clean_cells[5]) else ""
 
-                        # Nel MIT cleaned[0] e cleaned[1] sono Data Inizio e Data Fine
-                        sindacati = cleaned[2] if len(cleaned) > 2 else "N/D"
-                        settore_raw = cleaned[3] if len(cleaned) > 3 else ""
-                        personale_ente = cleaned[4] if len(cleaned) > 4 else ""
-                        modalita = cleaned[5] if len(cleaned) > 5 and not re.search(r'\d{2}/\d{2}/\d{4}', cleaned[5]) else ""
-
-                        settore_finale = normalize_sector(settore_raw, row_joined)
-                        citta_finale = extract_location(cleaned, row_joined)
-
-                        parti_descrizione = []
-                        if personale_ente:
-                            parti_descrizione.append(personale_ente)
-                        if modalita and modalita.lower() not in ["nazionale", "regionale", "locale", "territoriale"]:
-                            parti_descrizione.append(f"Orari/Modalità: {modalita}")
-                        if sindacati:
-                            parti_descrizione.append(f"Sindacati: {sindacati}")
-
-                        descrizione_pulita = " • ".join(parti_descrizione) if parti_descrizione else row_joined
-
-                        mit_strikes.append({
-                            'city': citta_finale,
-                            'sector': settore_finale,
-                            'description': descrizione_pulita[:300],
+                        info_parts = [p for p in [ente, f"Orari/Modalità: {modalita}" if modalita else "", f"Sindacati: {sindacati}"] if p]
+                        
+                        mit_list.append({
+                            'city': find_city(row_str),
+                            'sector': classify_sector(settore_mit, row_str),
+                            'description': (" • ".join(info_parts))[:300],
                             'start_time': start_dt,
                             'end_time': end_dt,
                             'source_name': 'Ministero delle Infrastrutture e dei Trasporti (MIT)',
-                            'source_url': current_mit_url
+                            'source_url': mit_url
                         })
-                print(f"Scioperi MIT estratti con successo: {len(mit_strikes)}")
             except Exception as e:
-                print(f"Errore scraping MIT: {e}")
+                print(f"Errore MIT: {e}")
 
-            # --- 2. ATM MILANO ---
+            # --- 2. ATM MILANO (Nuovo link Homepage ufficiale) ---
             try:
-                atm_target_url = "https://www.atm.it/it/ViaggiaConNoi/InViaggio/Pagine/Infomobilit%C3%A0.aspx"
-                await page.goto(atm_target_url, timeout=35000)
+                atm_home_url = "https://www.atm.it/it/Pagine/default.aspx"
+                await page.goto(atm_home_url, timeout=35000)
                 await page.wait_for_timeout(3500)
-                
-                current_atm_url = page.url
-                print(f"URL attivo catturato per ATM: {current_atm_url}")
+                atm_current_url = page.url
+                print(f"URL catturato per ATM: {atm_current_url}")
 
-                body_text = await page.locator("body").inner_text()
-                lines = [re.sub(r'\s+', ' ', l).strip() for l in body_text.split('\n') if len(l.strip()) > 20]
-                
-                for line in lines:
-                    l_low = line.lower()
-                    # Filtriamo gli avvisi reali di circolazione/scioperi escludendo voci di menu
-                    if any(k in l_low for k in ["sciopero", "m1", "m2", "m3", "m4", "m5", "ultimi treni", "sostituiti da bus", "deviazioni", "agitazione"]):
-                        if any(skip in l_low for skip in ["cookie", "abbonamenti", "biglietti", "lavora con noi", "contatti"]):
-                            continue
+                # Estraiamo i testi da link, titoli e blocchi news presenti nella home di ATM
+                elements = await page.locator("a, h2, h3, h4, p, li, .atm-news, .ms-rtestate-field").all()
+                seen_atm = set()
 
-                        date_match = re.search(r'(\d{2})/(\d{2})/(\d{4})', line)
-                        if date_match:
-                            start_atm = parse_italian_date(date_match.group(0), False)
-                            end_atm = parse_italian_date(date_match.group(0), True)
-                        elif "29" in line and "30" in line and "ottobre" in l_low:
-                            start_atm = datetime(2026, 10, 29, 0, 0, 0)
-                            end_atm = datetime(2026, 10, 30, 23, 59, 59)
-                        else:
-                            start_atm = datetime.now() + timedelta(days=2)
-                            end_atm = datetime.now() + timedelta(days=3)
+                keywords_atm = ["sciopero", "m1", "m2", "m3", "m4", "m5", "metro", "bus", "tram", "treni", "sostituiti", "circolazione", "servizio", "orario"]
+                skip_atm = ["abbonamenti", "biglietti", "cookie", "privacy", "lavora con noi", "chi siamo", "bandi", "gare", "area riservata"]
 
-                        atm_strikes.append({
-                            'city': 'Milano',
-                            'sector': 'TPL',
-                            'description': f"ATM Milano: {line[:260]}",
-                            'start_time': start_atm,
-                            'end_time': end_atm,
-                            'source_name': 'ATM Milano',
-                            'source_url': current_atm_url
-                        })
-                        if len(atm_strikes) >= 2:
-                            break
-                print(f"Avvisi ATM estratti con successo: {len(atm_strikes)}")
+                for el in elements:
+                    txt = re.sub(r'\s+', ' ', await el.inner_text()).strip()
+                    if 22 <= len(txt) <= 280 and txt not in seen_atm:
+                        t_low = txt.lower()
+                        if any(k in t_low for k in keywords_atm) and not any(s in t_low for s in skip_atm):
+                            seen_atm.add(txt)
+                            start_atm, end_atm = extract_dates_from_text(txt, default_days_offset=1)
+                            atm_list.append({
+                                'city': 'Milano',
+                                'sector': 'TPL',
+                                'description': f"ATM Milano: {txt}",
+                                'start_time': start_atm,
+                                'end_time': end_atm,
+                                'source_name': 'ATM Milano',
+                                'source_url': atm_current_url
+                            })
+                            if len(atm_list) >= 3:
+                                break
+                print(f"Avvisi ATM estratti dalla homepage: {len(atm_list)}")
             except Exception as e:
-                print(f"Errore scraping ATM: {e}")
+                print(f"Errore ATM: {e}")
 
-            # --- 3. TRENORD (dal nuovo link ufficiale) ---
+            # --- 3. TRENORD ---
             try:
-                trenord_target_url = "https://www.trenord.it/news/trenord-informa/avvisi/"
-                await page.goto(trenord_target_url, timeout=35000)
+                trenord_url = "https://www.trenord.it/news/trenord-informa/avvisi/"
+                await page.goto(trenord_url, timeout=35000)
                 await page.wait_for_timeout(3500)
-                
-                current_trenord_url = page.url
-                print(f"URL attivo catturato per Trenord: {current_trenord_url}")
+                tr_current_url = page.url
 
-                body_text = await page.locator("body").inner_text()
-                lines = [re.sub(r'\s+', ' ', l).strip() for l in body_text.split('\n') if len(l.strip()) > 20]
-                for line in lines:
-                    if "sciopero" in line.lower():
-                        date_match = re.search(r'(\d{2})/(\d{2})/(\d{4})', line)
-                        if date_match:
-                            start_tr = parse_italian_date(date_match.group(0), False)
-                            end_tr = parse_italian_date(date_match.group(0), True)
-                        elif "29" in line and "30" in line:
-                            start_tr = datetime(2026, 10, 29, 0, 0, 0)
-                            end_tr = datetime(2026, 10, 30, 23, 59, 59)
-                        else:
-                            start_tr = datetime.now() + timedelta(days=2)
-                            end_tr = datetime.now() + timedelta(days=3)
+                body_lines = [re.sub(r'\s+', ' ', l).strip() for l in (await page.locator("body").inner_text()).split('\n') if len(l.strip()) > 20]
+                seen_tr = set()
 
-                        trenord_strikes.append({
+                for line in body_lines:
+                    if "sciopero" in line.lower() and line not in seen_tr:
+                        seen_tr.add(line)
+                        start_tr, end_tr = extract_dates_from_text(line, default_days_offset=2)
+                        trenord_list.append({
                             'city': 'Milano / Lombardia',
                             'sector': 'Ferroviario',
-                            'description': f"Trenord (Treni Regionali, Suburbani e Malpensa Express): {line[:260]}",
+                            'description': f"Trenord: {line[:260]}",
                             'start_time': start_tr,
                             'end_time': end_tr,
                             'source_name': 'Trenord',
-                            'source_url': current_trenord_url
+                            'source_url': tr_current_url
                         })
-                        if len(trenord_strikes) >= 2:
+                        if len(trenord_list) >= 2:
                             break
-                print(f"Scioperi Trenord estratti con successo: {len(trenord_strikes)}")
             except Exception as e:
-                print(f"Errore scraping Trenord: {e}")
+                print(f"Errore Trenord: {e}")
 
             await browser.close()
 
-        # Salvataggio selettivo per singola fonte (non cancella le altre fonti se una fallisce)
-        added_count = 0
-        for group in [mit_strikes, atm_strikes, trenord_strikes]:
+        # Salvataggio nel DB per ciascuna fonte
+        total_saved = 0
+        for group in [mit_list, atm_list, trenord_list]:
             if not group:
                 continue
             
-            first_source_name = group[0]['source_name']
-            first_source_url = group[0]['source_url']
+            s_name = group[0]['source_name']
+            s_url = group[0]['source_url']
 
-            source_obj = db.query(Source).filter(Source.name == first_source_name).first()
-            if not source_obj:
-                source_obj = Source(name=first_source_name, url=first_source_url)
-                db.add(source_obj)
+            src = db.query(Source).filter(Source.name == s_name).first()
+            if not src:
+                src = Source(name=s_name, url=s_url)
+                db.add(src)
                 db.flush()
             else:
-                source_obj.url = first_source_url
+                src.url = s_url
 
-            # Ripulisce solo i vecchi record di QUESTA specifica fonte prima di inserire quelli freschi
-            db.query(Strike).filter(Strike.source_id == source_obj.id).delete()
+            db.query(Strike).filter(Strike.source_id == src.id).delete()
             db.flush()
 
-            for strike_data in group:
-                new_strike = Strike(
-                    city=strike_data.get('city'),
-                    sector=strike_data.get('sector'),
-                    description=strike_data.get('description'),
-                    start_time=strike_data.get('start_time'),
-                    end_time=strike_data.get('end_time'),
-                    source_id=source_obj.id
-                )
-                db.add(new_strike)
-                added_count += 1
+            for item in group:
+                db.add(Strike(
+                    city=item['city'],
+                    sector=item['sector'],
+                    description=item['description'],
+                    start_time=item['start_time'],
+                    end_time=item['end_time'],
+                    source_id=src.id
+                ))
+                total_saved += 1
 
         db.commit()
-        print(f"--- SPIDER COMPLETATO CON SUCCESSO: Salvati {added_count} scioperi totali (MIT + ATM + Trenord) ---")
+        print(f"--- SPIDER COMPLETATO: {total_saved} record salvati ---")
     except Exception as e:
         db.rollback()
-        print(f"ERRORE CRITICO NELLO SPIDER: {e}")
+        print(f"ERRORE SPIDER: {e}")
         raise e
     finally:
         db.close()
