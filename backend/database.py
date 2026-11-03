@@ -1,23 +1,17 @@
-# Configurazione e connessione al database PostgreSQL (SQLAlchemy)
-
+import os
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
 
-# URL di connessione al database PostgreSQL
-# Formato: postgresql://username:password@localhost:5432/nome_database
-SQLALCHEMY_DATABASE_URL = "postgresql://mariorova@localhost:5432/scioperi_db"
+load_dotenv()
 
-# Creazione dell'engine di connessione
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/scioperi_db")
 
-# Creazione della Sessione per comunicare con il DB
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Base dichiarativa per definire i modelli delle tabelle
 Base = declarative_base()
 
-# Funzione di utilità per ottenere la sessione del database nelle rotte FastAPI
 def get_db():
     db = SessionLocal()
     try:

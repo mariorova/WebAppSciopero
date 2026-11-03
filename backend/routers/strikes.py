@@ -11,7 +11,7 @@ from database import get_db
 from models.strike import Strike
 from models.user import User
 from schemas.strike_schema import StrikeDetailResponse
-from scraper.spider import run_spider
+from scraper.scheduler import run_spider_safely
 
 router = APIRouter(prefix="", tags=["Scioperi"])
 
@@ -41,8 +41,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 def parse_and_enrich_strike(s: Strike):
     """
-    Se il record nel DB contiene una stringa grezza del MIT (es. 'MIT: 28/10/2026 - 29/10/2026 - ...'),
-    estrae le vere date di inizio/fine, il settore reale, la città e formatta la descrizione.
+    Se il record nel DB contiene una stringa grezza, estrae le date,
+    il settore reale, la città e formatta la descrizione sintetica.
     """
     desc = s.description or ""
     start_dt = s.start_time
@@ -62,20 +62,17 @@ def parse_and_enrich_strike(s: Strike):
         start_dt = datetime(y1, m1, d1, 0, 0, 0)
         end_dt = datetime(y1, m1, d1, 23, 59, 59)
 
-    # 2. Se il testo inizia con 'MIT:', scomponiamo i campi separati da ' - '
     clean_desc = desc
     if desc.startswith("MIT:"):
         raw_body = desc.replace("MIT:", "").strip()
         parts = [p.strip() for p in raw_body.split(" - ") if p.strip()]
         
-        # Struttura tipica MIT: [0]=DataInizio, [1]=DataFine, [2]=Sindacato, [3]=Settore, [4]=Personale/Mezzi, [5]=Orari/Modalità, [6]=Ambito
         if len(parts) >= 5:
             sindacato = parts[2]
             settore_mit = parts[3]
             azienda_mezzi = parts[4]
             modalita = parts[5] if len(parts) > 5 and not re.search(r'\d{2}/\d{2}/\d{4}', parts[5]) else ""
             
-            # Impostiamo il settore reale invece di 'Trasporto Pubblico' fisso
             s_low = (settore_mit + " " + azienda_mezzi).lower()
             if "ferrovi" in s_low or "trenitalia" in s_low or "trenord" in s_low:
                 sector = "Ferroviario"
@@ -92,13 +89,11 @@ def parse_and_enrich_strike(s: Strike):
             else:
                 sector = settore_mit
 
-            # Ricostruiamo una descrizione leggibile che mostri subito CHI sciopera, MEZZI e ORARI
             if modalita and modalita.lower() not in ["nazionale", "regionale", "locale"]:
                 clean_desc = f"{azienda_mezzi} • Orari/Modalità: {modalita} • Sindacati: {sindacato}"
             else:
                 clean_desc = f"{azienda_mezzi} • Sindacati: {sindacato}"
 
-    # 3. Rilevamento automatico della città/regione dal testo se è rimasto 'Nazionale / Varie'
     if city in ["Nazionale / Varie", "Nazionale"]:
         luoghi = [
             "Milano", "Roma", "Napoli", "Torino", "Bologna", "Firenze", "Pisa", 
@@ -130,13 +125,11 @@ def get_scioperi(
     for s in strikes:
         start_dt, end_dt, parsed_city, parsed_sector, parsed_desc = parse_and_enrich_strike(s)
 
-        # Filtri opzionali da query param
         if citta and citta.lower() not in parsed_city.lower():
             continue
         if settore and settore.lower() not in parsed_sector.lower():
             continue
 
-        # Calcolo stato reale in base alle date estratte
         if start_dt <= now <= end_dt:
             stato = "in_corso"
         elif start_dt > now:
@@ -144,7 +137,6 @@ def get_scioperi(
         else:
             stato = "concluso"
 
-        # Escludiamo quelli già conclusi nei giorni passati
         if stato == "concluso":
             continue
 
@@ -165,7 +157,6 @@ def get_scioperi(
             "stato": stato
         })
 
-    # Ordiniamo per data di inizio crescente (prima quelli più vicini)
     results.sort(key=lambda x: x["data_inizio"])
     total = len(results)
     paginated = results[page * size : (page + 1) * size]
@@ -180,17 +171,16 @@ def get_scioperi(
 
 @router.post("/trigger-spider", status_code=status.HTTP_200_OK)
 async def trigger_spider_manually():
-    try:
-        await run_spider()
+    success = await run_spider_safely()
+    if not success:
         return {
-            "status": "success", 
-            "message": "Spider multi-fonte eseguito con successo!"
+            "status": "busy", 
+            "message": "Un ciclo di scraping è già in esecuzione. Richiesta ignorata."
         }
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Errore durante l'esecuzione dello spider: {str(e)}"
-        )
+    return {
+        "status": "success", 
+        "message": "Spider multi-fonte eseguito con successo!"
+    }
 
 @router.get("/{id}", response_model=StrikeDetailResponse)
 def get_sciopero_detail(

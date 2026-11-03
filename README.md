@@ -81,5 +81,34 @@ source venv/bin/activate
 AVVIO FRONTEND: 
 npm run dev
 
+1. Gestione degli Errori e "Empty States" nel Frontend
+Cosa fare: Assicurati che se lo spider fallisce o il server non risponde, l'utente veda un messaggio chiaro (es. "Impossibile connettersi alle fonti ufficiali, riprova più tardi") invece di schermate vuote o blocchi di caricamento infiniti.
 
-MANCA DA SISTEMARE SPIDER DI ATM CHE NON MOSTRA NULLA
+Perché: Durante il lancio pubblico, i siti istituzionali potrebbero bloccare temporaneamente le richieste o essere in manutenzione.
+
+2. Sistema di Cache o Coda per lo Scraping
+Cosa fare: Attualmente lo spider viene eseguito ogni 2 ore in background. Assicurati che le richieste API dal frontend leggano direttamente dal database PostgreSQL (cosa che già fai) e che lo spider non sovraccarichi il server o le fonti eseguendo richieste concorrenti se un ciclo precedente è ancora in corso.
+
+Perché: Evita il rischio di ban degli IP da parte del portale del MIT o di ATM a causa di troppe richieste ravvicinate.
+
+3. Log delle Esecuzioni dello Spider (Monitoraggio)
+Cosa fare: Aggiungi una piccola tabella nel database (es. spider_logs) che memorizza data, ora, stato (successo/fallimento) e numero di record importati per ogni esecuzione automatica. Potresti anche esporre un endpoint riservato agli amministratori per verificare lo stato di salute del monitoraggio.
+
+Perché: Quando la web app sarà online, avrai bisogno di sapere subito se lo scraping ha smesso di funzionare a causa di modifiche alla struttura HTML dei siti ufficiali.
+
+4. Ottimizzazione SEO e Metadati (Fondamentale prima del dominio)
+Cosa fare: Configura correttamente i tag <title>, la meta description e i tag Open Graph (per le anteprime quando l'app viene condivisa su WhatsApp, Telegram o social) all'interno del progetto React (index.html o tramite librerie come react-helmet).
+
+Perché: Trattandosi di un servizio utile per i pendolari, la condivisione social e l'indicizzazione su Google per chiavi come "scioperi mezzi Milano" o "sciopero treni" saranno la tua principale fonte di traffico organico.
+
+5. Sicurezza di Produzione (HTTPS, Rate Limiting e Variabili d'Ambiente)
+Cosa fare:
+
+Sposta chiavi segrete, stringhe di connessione al database e credenziali in un file .env sicuro che non finisca su GitHub.
+
+Implementa un semplice Rate Limiting sulle API FastAPI (specialmente sugli endpoint di autenticazione e login) per prevenire attacchi di forza bruta.
+
+Assicurati che il dominio futuro utilizzi esclusivamente HTTPS.
+
+6. Pagine Legali e di Servizio
+Cosa fare: Aggiungi una pagina o un modale con l'Informativa sulla Privacy (Privacy Policy), i Termini di Servizio e un disclaimer che specifichi che i dati provengono da fonti pubbliche ufficiali ma che l'app declina ogni responsabilità per eventuali variazioni improvvise della circolazione.

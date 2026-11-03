@@ -2,27 +2,44 @@ import asyncio
 from datetime import datetime
 from scraper.spider import run_spider
 
-# Riferimento globale al task per evitare che venga eliminato dal garbage collector
+# Riferimento globale al task e lock di concorrenza
 _scheduler_task = None
-INTERVAL_SECONDS = 2 * 60 * 60  # 2 ore (7200 secondi)
+_scraping_lock = asyncio.Lock()  # Lock asincrono per impedire esecuzioni sovrapposte
+INTERVAL_SECONDS = 2 * 60 * 60     # 2 ore (7200 secondi)
+
+async def run_spider_safely():
+    """
+    Esegue lo spider verificando che non ce ne sia un altro già in esecuzione.
+    Se è già attivo un processo di scraping, la richiesta viene ignorata in sicurezza.
+    """
+    if _scraping_lock.locked():
+        print("[SCHEDULER] ATTENZIONE: C'è già uno scraping in corso. Richiesta ignorata per evitare sovrapposizioni.")
+        return False
+
+    async with _scraping_lock:
+        try:
+            ora_attuale = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            print(f"[{ora_attuale}] --- AVVIO SPIDER CON LOCK ATTIVO ---")
+            await run_spider()
+            ora_fine = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            print(f"[{ora_fine}] --- SPIDER COMPLETATO CON SUCCESSO ---")
+            return True
+        except Exception as e:
+            print(f"[ERRORE SCHEDULER] Errore durante l'esecuzione dello spider: {e}")
+            return False
 
 async def _periodic_spider_loop():
     """
     Loop in background che esegue lo spider immediatamente all'avvio del server
-    e successivamente si ripete ogni 2 ore finché il server resta acceso.
+    e successivamente si ripete ogni 2 ore.
     """
-    while True:
-        try:
-            ora_attuale = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            print(f"[{ora_attuale}] --- AVVIO AUTOMATICO SPIDER (Startup / Pianificato) ---")
-            await run_spider()
-            ora_fine = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            print(f"[{ora_fine}] --- SPIDER AUTOMATICO COMPLETATO. Prossima esecuzione tra 2 ore ---")
-        except Exception as e:
-            print(f"[ERRORE SCHEDULER] Errore durante l'esecuzione automatica dello spider: {e}")
+    # Esecuzione immediata all'avvio
+    await run_spider_safely()
 
+    while True:
         # Attende 2 ore prima della prossima scansione
         await asyncio.sleep(INTERVAL_SECONDS)
+        await run_spider_safely()
 
 def start_scheduler():
     """
@@ -33,7 +50,7 @@ def start_scheduler():
         loop = asyncio.get_running_loop()
         if _scheduler_task is None or _scheduler_task.done():
             _scheduler_task = loop.create_task(_periodic_spider_loop())
-            print("--- SCHEDULER ATTIVATO: Scansione iniziale avviata in background + ciclo ogni 2 ore ---")
+            print("--- SCHEDULER ATTIVATO CON LOCK CONCORRENTE ---")
     except RuntimeError as e:
         print(f"Impossibile avviare lo scheduler automatico: {e}")
 
