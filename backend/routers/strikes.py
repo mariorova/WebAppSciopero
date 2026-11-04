@@ -1,4 +1,3 @@
-# Rotte per gli scioperi (/api/scioperi/...)
 import re
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
@@ -40,17 +39,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 def parse_and_enrich_strike(s: Strike):
-    """
-    Se il record nel DB contiene una stringa grezza, estrae le date,
-    il settore reale, la città e formatta la descrizione sintetica.
-    """
     desc = s.description or ""
     start_dt = s.start_time
     end_dt = s.end_time
     city = s.city or "Nazionale"
     sector = s.sector or "Trasporti"
 
-    # 1. Estrazione delle vere date di inizio e fine dal testo se presenti (formato GG/MM/AAAA)
     date_matches = re.findall(r'(\d{2})/(\d{2})/(\d{4})', desc)
     if len(date_matches) >= 2:
         d1, m1, y1 = map(int, date_matches[0])
@@ -74,7 +68,7 @@ def parse_and_enrich_strike(s: Strike):
             modalita = parts[5] if len(parts) > 5 and not re.search(r'\d{2}/\d{2}/\d{4}', parts[5]) else ""
             
             s_low = (settore_mit + " " + azienda_mezzi).lower()
-            if "ferrovi" in s_low or "trenitalia" in s_low or "trenord" in s_low:
+            if "ferrovi" in s_low or "trenitalia" in s_low or "trenord" in s_low or "italo" in s_low:
                 sector = "Ferroviario"
             elif "aereo" in s_low or "aeroport" in s_low or "enav" in s_low:
                 sector = "Aereo"
@@ -115,7 +109,7 @@ def get_scioperi(
     attivi_ora: Optional[bool] = Query(False, description="Filtra solo gli scioperi attivi in questo momento"),
     solo_futuri: Optional[bool] = Query(False, description="Filtra solo gli scioperi in programma nel futuro"),
     page: int = Query(0, ge=0),
-    size: int = Query(50, ge=1, le=100),
+    size: int = Query(200, ge=1, le=500),
     db: Session = Depends(get_db)
 ):
     strikes = db.query(Strike).all()
