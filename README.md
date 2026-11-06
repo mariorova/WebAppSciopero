@@ -80,3 +80,5 @@ source venv/bin/activate
 
 AVVIO FRONTEND: 
 npm run dev
+
+sistemare il fatto che una card mostra più scioperi insieme, check perché alcuni mi sa che non si vedono, inserire nuove fonti

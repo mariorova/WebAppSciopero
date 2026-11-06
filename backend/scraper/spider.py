@@ -14,6 +14,7 @@ MESI_IT = {
 }
 
 NUM_TO_MESE_IT = {v: k for k, v in MESI_IT.items()}
+MESI_REGEX = "|".join(MESI_IT.keys())
 
 def extract_dates_from_text(text: str, default_days_offset: int = 1):
     now = datetime.now()
@@ -61,6 +62,44 @@ def extract_dates_from_text(text: str, default_days_offset: int = 1):
     start_fallback = now + timedelta(days=default_days_offset)
     return start_fallback, start_fallback.replace(hour=23, minute=59, second=59)
 
+def split_multi_date_paragraph(text: str, context_prefix: str = "") -> list[str]:
+    """
+    Se un paragrafo contiene più date distinte in frasi diverse (es. calendario Enav su Leggo.it:
+    'Il primo è del 6 novembre... Seguirà quello del 21 novembre... Il giorno successivo, 22 novembre...'),
+    lo spezza in singole frasi autonome mantenendo il soggetto/contesto iniziale.
+    """
+    date_pattern = re.compile(rf'\b\d{{1,2}}\s+(?:{MESI_REGEX})\b', re.IGNORECASE)
+    all_dates = date_pattern.findall(text)
+    
+    # Se c'è una sola data (o nessuna), non serve spezzare
+    unique_dates = list(dict.fromkeys([d.lower() for d in all_dates]))
+    if len(unique_dates) <= 1:
+        return [f"{context_prefix} {text}".strip() if context_prefix else text]
+
+    # Spezza il paragrafo in frasi (sul punto fermo seguito da spazio)
+    sentences = [s.strip() for s in re.split(r'(?<=\.)\s+', text) if s.strip()]
+    
+    # Individua eventuale frase introduttiva senza data (es. "Per i lavoratori Enav il calendario comprende tre appuntamenti.")
+    intro_context = context_prefix
+    chunks = []
+    
+    for s in sentences:
+        s_dates = date_pattern.findall(s)
+        if not s_dates:
+            if not intro_context and len(s) < 140:
+                intro_context = s.rstrip('.')
+            elif chunks:
+                # Frase di dettaglio successiva senza data: la accoda all'ultimo sciopero
+                chunks[-1] = f"{chunks[-1]} {s}"
+        else:
+            # Se la frase ha una data, creiamo una voce autonoma con il contesto iniziale
+            if intro_context and intro_context.lower() not in s.lower():
+                chunks.append(f"{intro_context}: {s}")
+            else:
+                chunks.append(s)
+
+    return chunks if chunks else [text]
+
 def classify_sector(raw_sector: str, full_text: str) -> str:
     combined = f"{raw_sector} {full_text}".lower()
     if any(k in combined for k in ["sciopero generale", "plurisettoriale", "tutti i settori", "pubblico impiego"]):
@@ -73,7 +112,7 @@ def classify_sector(raw_sector: str, full_text: str) -> str:
         return "Marittimo"
     if any(k in combined for k in ["trasporto pubblico locale", "tpl", "atm", "atac", "amt", "atvo", "amtab", "eav", "anm", "autobus", "bus", "metro", "tram", "mezzi pubblici", "trasporto pubblico"]):
         return "TPL"
-    if any(k in combined for k in ["autostrad", "stradal", "viabilit", "caselli"]):
+    if any(k in combined for k in ["autostrad", "stradal", "viabilit", "caselli", "logistica"]):
         return "Autostrade / Viabilità"
     if any(k in combined for k in ["telecomunicazion", "iren", "multiservizi", "igiene", "energia", "scuola"]):
         return "Servizi / Multisettore"
@@ -84,7 +123,7 @@ def find_city(description: str) -> str:
     cities = [
         "Milano", "Roma", "Napoli", "Torino", "Bologna", "Firenze", "Pisa", "Bari", 
         "Venezia", "Genova", "Palermo", "Catania", "Verona", "Reggio Emilia", "Rimini",
-        "Lombardia", "Lazio", "Toscana", "Campania", "Piemonte", "Emilia-Romagna", "Puglia", "Sicilia", "Veneto"
+        "Volla", "Lombardia", "Lazio", "Toscana", "Campania", "Piemonte", "Emilia-Romagna", "Puglia", "Sicilia", "Veneto"
     ]
     found = [c for c in cities if re.search(rf'\b{c}\b', description, re.IGNORECASE)]
     if "malpensa" in desc_low or "linate" in desc_low or "atm" in desc_low:
@@ -96,6 +135,9 @@ def find_city(description: str) -> str:
         found.append("Venezia")
     if "amtab" in desc_low and "Bari" not in found:
         found.append("Bari")
+    if "volla" in desc_low or "(na)" in desc_low:
+        if "Napoli" not in found:
+            found = ["Napoli"]
 
     if found:
         return " / ".join(dict.fromkeys(found[:2]))
@@ -109,7 +151,6 @@ async def find_sky_monthly_articles(page) -> list[str]:
     monthly_urls = []
     other_sky_urls = []
 
-    # 1. Controlla gli URL diretti del calendario mensile di Sky TG24 Cronaca (giorni 01..10 del mese)
     for day in range(1, 10):
         cand_url = f"https://tg24.sky.it/cronaca/{anno_corrente}/{now.month:02d}/{day:02d}/scioperi-{mese_corrente_nome}-{anno_corrente}"
         try:
@@ -121,7 +162,6 @@ async def find_sky_monthly_articles(page) -> list[str]:
         except Exception:
             continue
 
-    # 2. Scansiona anche /tag/sciopero e /cronaca per trovare eventuali articoli di mesi futuri o pubblicati in altri giorni
     for disc_url in ["https://tg24.sky.it/tag/sciopero", "https://tg24.sky.it/cronaca"]:
         try:
             await page.goto(disc_url, timeout=25000)
@@ -147,105 +187,120 @@ async def find_sky_monthly_articles(page) -> list[str]:
     return (monthly_urls + other_sky_urls)[:3]
 
 async def extract_sky_cards_from_article(page, art_url: str, now_threshold: datetime) -> list[dict]:
-    """
-    Estrae tutte le schede (1/10 ... 10/10) dall'articolo mensile di Sky TG24
-    accoppiando ogni titolo h2/h3 con tutti i paragrafi che lo seguono prima del prossimo h2/h3.
-    """
     extracted = []
-    seen_titles = set()
+    seen_keys = set()
 
-    await page.goto(art_url, timeout=35000)
+    await page.goto(art_url, timeout=40000)
     await page.wait_for_timeout(2000)
 
-    # Scroll completo della pagina per assicurarsi che tutte le 10 schede siano renderizzate
-    for _ in range(8):
-        await page.mouse.wheel(0, 1000)
-        await page.wait_for_timeout(300)
+    for btn_selector in [
+        "button:has-text('Accetta')",
+        "button:has-text('Accetto')",
+        "#onetrust-accept-btn-handler",
+        ".iubenda-cs-accept-btn"
+    ]:
+        try:
+            btn = page.locator(btn_selector).first
+            if await btn.is_visible(timeout=800):
+                await btn.click()
+                await page.wait_for_timeout(1000)
+                break
+        except Exception:
+            pass
 
-    # Estrazione lineare a prova di annidamento: scorre tutti gli h2, h3, p, li in ordine di apparizione nel DOM
-    cards_data = await page.evaluate("""() => {
-        const results = [];
-        const elements = Array.from(document.querySelectorAll('h2, h3, p, li'));
-        let currentTitle = null;
-        let currentBody = [];
+    for _ in range(12):
+        await page.mouse.wheel(0, 700)
+        await page.wait_for_timeout(350)
 
-        const skipTitles = ['quello che devi sapere', 'introduzione', 'ultime notizie', 'potrebbe interessarti'];
+    all_texts = []
+    for frame in page.frames:
+        try:
+            t = await frame.evaluate("() => document.body ? document.body.innerText : ''")
+            if t and len(t) > 100:
+                all_texts.append(t)
+        except Exception:
+            pass
 
-        for (const el of elements) {
-            const tag = el.tagName.toUpperCase();
-            const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
-            if (!text) continue;
+    try:
+        raw_html = await page.content()
+        html_clean = re.sub(r'<[^>]+>', '\n', raw_html)
+        all_texts.append(html_clean)
+    except Exception:
+        pass
 
-            if (tag === 'H2' || tag === 'H3') {
-                if (currentTitle && currentBody.length > 0) {
-                    results.push({ title: currentTitle, body: currentBody.join(' ') });
-                }
-                if (skipTitles.includes(text.toLowerCase())) {
-                    currentTitle = null;
-                    currentBody = [];
-                } else {
-                    currentTitle = text;
-                    currentBody = [];
-                }
-            } else if (currentTitle) {
-                if (
-                    !text.startsWith('Per approfondire:') &&
-                    !text.startsWith('Leggi anche:') &&
-                    !/^\\d+\\s*\\/\\s*\\d+$/.test(text) &&
-                    !text.includes('Sky TG24 tutti i diritti') &&
-                    text.length > 15
-                ) {
-                    if (!currentBody.includes(text)) {
-                        currentBody.push(text);
-                    }
-                }
-            }
-        }
-        if (currentTitle && currentBody.length > 0) {
-            results.push({ title: currentTitle, body: currentBody.join(' ') });
-        }
-        return results;
-    }""")
+    full_combined_dump = "\n".join(all_texts)
 
-    print(f"[SKY TG24] Trovate {len(cards_data)} sezioni con titolo in {art_url}")
+    lines = [re.sub(r'\s+', ' ', l).strip() for l in full_combined_dump.splitlines()]
+    lines = [l for l in lines if l]
 
-    for card in cards_data:
-        title = card.get("title", "").strip()
-        body = card.get("body", "").strip()
-        combined_text = f"{title} - {body}"
-        comb_low = combined_text.lower()
+    header_pattern = re.compile(
+        rf'^([A-Za-z0-9À-ÿ\s\.\'/,\(\)]+?)\s*[-–—]\s*(\d{{1,2}}\s+(?:{MESI_REGEX}))$',
+        re.IGNORECASE
+    )
+    counter_pattern = re.compile(r'^\d{1,2}\s*/\s*\d{1,2}$')
 
-        # Verifica che nel titolo o nel corpo ci sia una data con il nome di un mese (es. "9 novembre", "20 novembre")
-        has_month_date = any(
-            re.search(rf'\b\d{{1,2}}\s+{m}\b', comb_low) for m in MESI_IT.keys()
-        )
-        has_kw = any(kw in comb_low for kw in [
-            "sciopero", "mobilitazione", "agitazione", "astensione", "stop", 
-            "fermeranno", "lavoratori", "personale", "sindacat", "orario", "ore", "fasce", "garanzia"
-        ])
+    cards_parsed = []
+    current_title = None
+    current_body = []
 
-        if has_month_date and has_kw and title not in seen_titles:
-            has_title_date = any(re.search(rf'\b\d{{1,2}}\s+{m}\b', title.lower()) for m in MESI_IT.keys())
-            s_start, s_end = extract_dates_from_text(title if has_title_date else combined_text, default_days_offset=2)
+    for line in lines:
+        if counter_pattern.match(line):
+            if current_title and current_body:
+                cards_parsed.append((current_title, " ".join(current_body)))
+            current_title = None
+            current_body = []
+            continue
 
-            if s_end >= now_threshold:
-                seen_titles.add(title)
-                clean_desc = f"Sky TG24 • {title}: {body}"
-                extracted.append({
-                    'city': find_city(combined_text),
-                    'sector': classify_sector("", combined_text),
-                    'description': clean_desc[:295],
-                    'start_time': s_start,
-                    'end_time': s_end,
-                    'source_name': 'Sky TG24 Cronaca',
-                    'source_url': art_url
-                })
+        m_head = header_pattern.match(line)
+        if m_head and len(line) <= 85:
+            if current_title and current_body:
+                cards_parsed.append((current_title, " ".join(current_body)))
+            current_title = line
+            current_body = []
+            continue
+
+        if current_title:
+            if (
+                line.lower().startswith("per approfondire")
+                or line.lower().startswith("leggi anche")
+                or line.lower() in ["pubblicità", "quello che devi sapere", "condividi"]
+            ):
+                continue
+            if len(line) >= 20 and line not in current_body:
+                current_body.append(line)
+
+    if current_title and current_body:
+        cards_parsed.append((current_title, " ".join(current_body)))
+
+    print(f"[SKY TG24] Schede interattive trovate: {len(cards_parsed)}")
+
+    for title, body in cards_parsed:
+        key = title.lower().strip()
+        if key in seen_keys:
+            continue
+
+        combined_text = f"{title}: {body}"
+        s_start, s_end = extract_dates_from_text(title, default_days_offset=2)
+
+        if s_end >= now_threshold:
+            seen_keys.add(key)
+            clean_desc = f"Sky TG24 • {title}: {body}"
+            extracted.append({
+                'city': find_city(combined_text),
+                'sector': classify_sector(title, combined_text),
+                'description': clean_desc[:295],
+                'start_time': s_start,
+                'end_time': s_end,
+                'source_name': 'Sky TG24 Cronaca',
+                'source_url': art_url
+            })
 
     return extracted
 
 async def scrape_leggo_articles(page, now_threshold: datetime) -> list[dict]:
     """
-    Cerca su Leggo.it gli articoli dedicati agli scioperi del mese corrente/futuro ed estrae i singoli scioperi.
+    Cerca su Leggo.it gli articoli dedicati agli scioperi del mese e spezza eventuali paragrafi
+    cumulativi (che elencano più date per la stessa azienda) in singoli record distinti.
     """
     leggo_list = []
     now = datetime.now()
@@ -281,24 +336,32 @@ async def scrape_leggo_articles(page, now_threshold: datetime) -> list[dict]:
                 await page.wait_for_timeout(1500)
                 paragraphs = await page.locator("article p, article li, .corpo-articolo p, .article-body p").all()
                 for p_el in paragraphs:
-                    txt = re.sub(r'\s+', ' ', await p_el.inner_text()).strip()
-                    if 40 <= len(txt) <= 450 and txt not in seen_leggo:
-                        t_low = txt.lower()
+                    raw_txt = re.sub(r'\s+', ' ', await p_el.inner_text()).strip()
+                    if len(raw_txt) < 35 or len(raw_txt) > 800:
+                        continue
+
+                    # Spezziamo il paragrafo se contiene più scioperi in date diverse!
+                    sub_items = split_multi_date_paragraph(raw_txt)
+
+                    for sub_txt in sub_items:
+                        if len(sub_txt) < 25 or sub_txt in seen_leggo:
+                            continue
+                        t_low = sub_txt.lower()
                         has_month_date = any(re.search(rf'\b\d{{1,2}}\s+{m}\b', t_low) for m in MESI_IT.keys())
-                        if has_month_date and any(k in t_low for k in ["sciopero", "stop", "mobilitazione", "agitazione", "treni", "mezzi", "voli"]):
-                            s_start, s_end = extract_dates_from_text(txt, default_days_offset=2)
+                        if has_month_date and any(k in t_low for k in ["sciopero", "stop", "mobilitazione", "agitazione", "treni", "mezzi", "voli", "enav", "personale", "lavoratori", "ore"]):
+                            s_start, s_end = extract_dates_from_text(sub_txt, default_days_offset=2)
                             if s_end >= now_threshold:
-                                seen_leggo.add(txt)
+                                seen_leggo.add(sub_txt)
                                 leggo_list.append({
-                                    'city': find_city(txt),
-                                    'sector': classify_sector("", txt),
-                                    'description': f"Leggo.it • {txt[:275]}",
+                                    'city': find_city(sub_txt),
+                                    'sector': classify_sector("", sub_txt),
+                                    'description': f"Leggo.it • {sub_txt[:275]}",
                                     'start_time': s_start,
                                     'end_time': s_end,
                                     'source_name': 'Leggo.it Cronaca',
                                     'source_url': art_url
                                 })
-                                if len(leggo_list) >= 8:
+                                if len(leggo_list) >= 15:
                                     break
             except Exception:
                 continue
@@ -419,7 +482,7 @@ async def run_spider():
             except Exception as e:
                 print(f"Errore Trenord: {e}")
 
-            # 4. SKY TG24 CRONACA (Tutte le schede dell'articolo mensile)
+            # 4. SKY TG24 CRONACA
             now_threshold = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             try:
                 sky_article_urls = await find_sky_monthly_articles(page)
