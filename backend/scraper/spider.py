@@ -16,11 +16,26 @@ MESI_IT = {
 NUM_TO_MESE_IT = {v: k for k, v in MESI_IT.items()}
 MESI_REGEX = "|".join(MESI_IT.keys())
 
-def extract_dates_from_text(text: str, default_days_offset: int = 1):
+def smart_truncate(text: str, max_len: int = 290) -> str:
+    """Taglia il testo senza mai spezzare le parole a metà."""
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len].rsplit(' ', 1)[0].rstrip('.,;:-«"')
+    return f"{cut}..."
+
+def clean_atm_pub_date(text: str) -> str:
+    """Rimuove il suffisso della data di pubblicazione di ATM (es. ' - 09/11') alla fine del titolo."""
+    return re.sub(r'\s*[-–]\s*\d{2}/\d{2}\s*$', '', text).strip()
+
+def extract_dates_from_text(text: str, default_days_offset: int = 1, allow_fallback: bool = True):
     now = datetime.now()
     
+    # Rimuove eventuali suffissi di pubblicazione "- GG/MM" prima di cercare la data dello sciopero
+    cleaned_text = clean_atm_pub_date(text)
+
     # 1. Formato GG/MM/AAAA
-    slash_dates = re.findall(r'(\d{1,2})/(\d{1,2})/(\d{4})', text)
+    slash_dates = re.findall(r'(\d{1,2})/(\d{1,2})/(\d{4})', cleaned_text)
     if slash_dates:
         try:
             d1, m1, y1 = map(int, slash_dates[0])
@@ -34,8 +49,8 @@ def extract_dates_from_text(text: str, default_days_offset: int = 1):
         except ValueError:
             pass
 
-    # 2. Formato testuale (es. "9 novembre", "dalle 21 del 20 novembre alle 20 del 21 novembre")
-    text_low = text.lower()
+    # 2. Formato testuale (es. "13 novembre", "dalle 21 del 20 novembre alle 20 del 21 novembre")
+    text_low = cleaned_text.lower()
     for nome_mese, num_mese in MESI_IT.items():
         if nome_mese in text_low:
             year = now.year + 1 if num_mese < now.month - 1 else now.year
@@ -59,27 +74,34 @@ def extract_dates_from_text(text: str, default_days_offset: int = 1):
                 except ValueError:
                     pass
 
-    start_fallback = now + timedelta(days=default_days_offset)
+    # 3. Se non c'è una data esplicita ma cita il giorno della settimana prossimo (es. "venerdì" su ATM)
+    weekdays_map = {
+        "lunedì": 0, "martedì": 1, "mercoledì": 2, "giovedì": 3,
+        "venerdì": 4, "sabato": 5, "domenica": 6
+    }
+    for wd_name, wd_num in weekdays_map.items():
+        if wd_name in text_low:
+            days_ahead = (wd_num - now.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            target_day = (now + timedelta(days=days_ahead)).replace(hour=0, minute=0, second=0, microsecond=0)
+            return target_day, target_day.replace(hour=23, minute=59, second=59)
+
+    if not allow_fallback:
+        return None, None
+
+    start_fallback = (now + timedelta(days=default_days_offset)).replace(hour=0, minute=0, second=0, microsecond=0)
     return start_fallback, start_fallback.replace(hour=23, minute=59, second=59)
 
 def split_multi_date_paragraph(text: str, context_prefix: str = "") -> list[str]:
-    """
-    Se un paragrafo contiene più date distinte in frasi diverse (es. calendario Enav su Leggo.it:
-    'Il primo è del 6 novembre... Seguirà quello del 21 novembre... Il giorno successivo, 22 novembre...'),
-    lo spezza in singole frasi autonome mantenendo il soggetto/contesto iniziale.
-    """
     date_pattern = re.compile(rf'\b\d{{1,2}}\s+(?:{MESI_REGEX})\b', re.IGNORECASE)
     all_dates = date_pattern.findall(text)
     
-    # Se c'è una sola data (o nessuna), non serve spezzare
     unique_dates = list(dict.fromkeys([d.lower() for d in all_dates]))
     if len(unique_dates) <= 1:
         return [f"{context_prefix} {text}".strip() if context_prefix else text]
 
-    # Spezza il paragrafo in frasi (sul punto fermo seguito da spazio)
     sentences = [s.strip() for s in re.split(r'(?<=\.)\s+', text) if s.strip()]
-    
-    # Individua eventuale frase introduttiva senza data (es. "Per i lavoratori Enav il calendario comprende tre appuntamenti.")
     intro_context = context_prefix
     chunks = []
     
@@ -89,10 +111,8 @@ def split_multi_date_paragraph(text: str, context_prefix: str = "") -> list[str]
             if not intro_context and len(s) < 140:
                 intro_context = s.rstrip('.')
             elif chunks:
-                # Frase di dettaglio successiva senza data: la accoda all'ultimo sciopero
                 chunks[-1] = f"{chunks[-1]} {s}"
         else:
-            # Se la frase ha una data, creiamo una voce autonoma con il contesto iniziale
             if intro_context and intro_context.lower() not in s.lower():
                 chunks.append(f"{intro_context}: {s}")
             else:
@@ -280,15 +300,15 @@ async def extract_sky_cards_from_article(page, art_url: str, now_threshold: date
             continue
 
         combined_text = f"{title}: {body}"
-        s_start, s_end = extract_dates_from_text(title, default_days_offset=2)
+        s_start, s_end = extract_dates_from_text(title, allow_fallback=False)
 
-        if s_end >= now_threshold:
+        if s_start and s_end and s_end >= now_threshold:
             seen_keys.add(key)
-            clean_desc = f"Sky TG24 • {title}: {body}"
+            clean_desc = smart_truncate(f"{title}: {body}", 290)
             extracted.append({
                 'city': find_city(combined_text),
                 'sector': classify_sector(title, combined_text),
-                'description': clean_desc[:295],
+                'description': clean_desc,
                 'start_time': s_start,
                 'end_time': s_end,
                 'source_name': 'Sky TG24 Cronaca',
@@ -299,13 +319,25 @@ async def extract_sky_cards_from_article(page, art_url: str, now_threshold: date
 
 async def scrape_leggo_articles(page, now_threshold: datetime) -> list[dict]:
     """
-    Cerca su Leggo.it gli articoli dedicati agli scioperi del mese e spezza eventuali paragrafi
-    cumulativi (che elencano più date per la stessa azienda) in singoli record distinti.
+    Estrae da Leggo.it solo veri scioperi dei trasporti/servizi che abbiano una data esplicita
+    (giorno + mese) e parole chiave strettamente legate allo sciopero, scartando opinioni politiche o sindacati di polizia.
     """
     leggo_list = []
     now = datetime.now()
     mese_corrente_nome = NUM_TO_MESE_IT[now.month]
     
+    # Parole da escludere (politica, forze dell'ordine, cronaca giudiziaria)
+    skip_words = [
+        "siulp", "divise", "polizia", "carabinieri", "governo", "manovra",
+        "meloni", "salvini", "previdenza dedicata", "privilegio", "processo"
+    ]
+    # Deve contenere almeno un termine legato a scioperi di trasporto/servizi
+    transport_words = [
+        "treni", "trenitalia", "italo", "trenord", "ferrovi", "aerei", "voli",
+        "enav", "aeroport", "mezzi", "autobus", "metro", "tram", "atm", "atac",
+        "tpl", "trasporto", "trasporti", "sciopero generale", "sciopero nazionale", "sciopero locale"
+    ]
+
     try:
         search_urls = [
             f"https://www.leggo.it/search/?keyword=scioperi+{mese_corrente_nome}",
@@ -337,31 +369,41 @@ async def scrape_leggo_articles(page, now_threshold: datetime) -> list[dict]:
                 paragraphs = await page.locator("article p, article li, .corpo-articolo p, .article-body p").all()
                 for p_el in paragraphs:
                     raw_txt = re.sub(r'\s+', ' ', await p_el.inner_text()).strip()
-                    if len(raw_txt) < 35 or len(raw_txt) > 800:
+                    if len(raw_txt) < 40 or len(raw_txt) > 800:
                         continue
 
-                    # Spezziamo il paragrafo se contiene più scioperi in date diverse!
+                    if any(sw in raw_txt.lower() for sw in skip_words):
+                        continue
+
                     sub_items = split_multi_date_paragraph(raw_txt)
 
                     for sub_txt in sub_items:
-                        if len(sub_txt) < 25 or sub_txt in seen_leggo:
+                        if len(sub_txt) < 30 or sub_txt in seen_leggo:
                             continue
                         t_low = sub_txt.lower()
+
+                        if any(sw in t_low for sw in skip_words):
+                            continue
+
+                        # Esige una data esplicita (es. "6 novembre", "21 novembre") E un riferimento a sciopero + trasporti
                         has_month_date = any(re.search(rf'\b\d{{1,2}}\s+{m}\b', t_low) for m in MESI_IT.keys())
-                        if has_month_date and any(k in t_low for k in ["sciopero", "stop", "mobilitazione", "agitazione", "treni", "mezzi", "voli", "enav", "personale", "lavoratori", "ore"]):
-                            s_start, s_end = extract_dates_from_text(sub_txt, default_days_offset=2)
-                            if s_end >= now_threshold:
+                        has_strike_word = any(k in t_low for k in ["sciopero", "stop", "mobilitazione", "agitazione", "incrociano le braccia"])
+                        has_transport_word = any(tw in t_low for tw in transport_words)
+
+                        if has_month_date and has_strike_word and has_transport_word:
+                            s_start, s_end = extract_dates_from_text(sub_txt, allow_fallback=False)
+                            if s_start and s_end and s_end >= now_threshold:
                                 seen_leggo.add(sub_txt)
                                 leggo_list.append({
                                     'city': find_city(sub_txt),
                                     'sector': classify_sector("", sub_txt),
-                                    'description': f"Leggo.it • {sub_txt[:275]}",
+                                    'description': smart_truncate(sub_txt, 285),
                                     'start_time': s_start,
                                     'end_time': s_end,
                                     'source_name': 'Leggo.it Cronaca',
                                     'source_url': art_url
                                 })
-                                if len(leggo_list) >= 15:
+                                if len(leggo_list) >= 12:
                                     break
             except Exception:
                 continue
@@ -378,6 +420,7 @@ async def run_spider():
     db.refresh(log_entry)
 
     mit_list, atm_list, trenord_list, sky_list, leggo_list = [], [], [], [], []
+    now_threshold = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
     try:
         async with async_playwright() as p:
@@ -406,7 +449,9 @@ async def run_spider():
                         row_str = " - ".join(clean_cells)
                         if not re.search(r'\d{2}/\d{2}/\d{4}', row_str):
                             continue
-                        start_dt, end_dt = extract_dates_from_text(row_str)
+                        start_dt, end_dt = extract_dates_from_text(row_str, allow_fallback=False)
+                        if not start_dt or not end_dt:
+                            continue
                         sindacati = clean_cells[2] if len(clean_cells) > 2 else "N/D"
                         settore_mit = clean_cells[3] if len(clean_cells) > 3 else ""
                         ente = clean_cells[4] if len(clean_cells) > 4 else ""
@@ -416,7 +461,7 @@ async def run_spider():
                         mit_list.append({
                             'city': find_city(row_str),
                             'sector': classify_sector(settore_mit, row_str),
-                            'description': (" • ".join(info_parts))[:300],
+                            'description': smart_truncate(" • ".join(info_parts), 295),
                             'start_time': start_dt,
                             'end_time': end_dt,
                             'source_name': 'Ministero delle Infrastrutture e dei Trasporti (MIT)',
@@ -425,34 +470,55 @@ async def run_spider():
             except Exception as e:
                 print(f"Errore MIT: {e}")
 
-            # 2. ATM MILANO
+            # 2. ATM MILANO (Solo veri scioperi, mai normali deviazioni tram/bus!)
             try:
                 await page.goto("https://www.atm.it/it/Pagine/default.aspx", timeout=35000)
                 await page.wait_for_timeout(3500)
                 atm_current_url = page.url
-                elements = await page.locator("a, h2, h3, h4, p, li, .atm-news, .ms-rtestate-field").all()
+                links = await page.locator("a").all()
                 seen_atm = set()
-                keywords_atm = ["sciopero", "m1", "m2", "m3", "m4", "m5", "metro", "bus", "tram", "treni", "sostituiti", "circolazione", "servizio", "orario"]
-                skip_atm = ["abbonamenti", "biglietti", "cookie", "privacy", "lavora con noi", "chi siamo", "bandi", "gare", "area riservata"]
+                skip_atm = ["abbonamenti", "biglietti", "cookie", "privacy", "lavora con noi", "chi siamo", "bandi", "gare", "area riservata", "deviazioni", "cambiamenti al servizio"]
 
-                for el in elements:
-                    txt = re.sub(r'\s+', ' ', await el.inner_text()).strip()
-                    if 22 <= len(txt) <= 280 and txt not in seen_atm:
-                        t_low = txt.lower()
-                        if any(k in t_low for k in keywords_atm) and not any(s in t_low for s in skip_atm):
-                            seen_atm.add(txt)
-                            start_atm, end_atm = extract_dates_from_text(txt, default_days_offset=1)
-                            atm_list.append({
-                                'city': 'Milano',
-                                'sector': 'TPL',
-                                'description': f"ATM Milano: {txt}",
-                                'start_time': start_atm,
-                                'end_time': end_atm,
-                                'source_name': 'ATM Milano',
-                                'source_url': atm_current_url
-                            })
-                            if len(atm_list) >= 3:
-                                break
+                atm_candidates = []
+                for a in links:
+                    txt = re.sub(r'\s+', ' ', await a.inner_text()).strip()
+                    href = await a.get_attribute("href") or ""
+                    cleaned_txt = clean_atm_pub_date(txt)
+                    if 18 <= len(cleaned_txt) <= 280 and cleaned_txt not in seen_atm:
+                        t_low = cleaned_txt.lower()
+                        # Cattura SOLO se parla esplicitamente di SCIOPERO o SINDACATI
+                        if "sciopero" in t_low and not any(s in t_low for s in skip_atm):
+                            seen_atm.add(cleaned_txt)
+                            full_href = f"https://www.atm.it{href}" if href.startswith("/") else (href if href.startswith("http") else atm_current_url)
+                            atm_candidates.append((cleaned_txt, full_href))
+
+                for cleaned_txt, full_href in atm_candidates[:3]:
+                    # Se il titolo nella home di ATM è troncato coi puntini (es. "Sciopero annunciato da AL Cobas venerdì..."),
+                    # visitiamo la pagina interna dell'avviso per leggere il testo completo e la data esatta!
+                    final_txt = cleaned_txt
+                    if full_href != atm_current_url and ("..." in cleaned_txt or not any(m in cleaned_txt.lower() for m in MESI_IT.keys())):
+                        try:
+                            await page.goto(full_href, timeout=20000)
+                            await page.wait_for_timeout(1500)
+                            page_title = await page.locator("h1, h2, .atm-title").first.inner_text()
+                            page_body = await page.locator("#ctl00_PlaceHolderMain_ctl01__ControlWrapper_RichHtmlField, main, article, body").first.inner_text()
+                            combined_atm = re.sub(r'\s+', ' ', f"{page_title}: {page_body}").strip()
+                            if len(combined_atm) > 30:
+                                final_txt = combined_atm
+                        except Exception:
+                            pass
+
+                    start_atm, end_atm = extract_dates_from_text(final_txt, allow_fallback=False)
+                    if start_atm and end_atm and end_atm >= now_threshold:
+                        atm_list.append({
+                            'city': 'Milano',
+                            'sector': 'TPL',
+                            'description': smart_truncate(f"ATM Milano: {clean_atm_pub_date(final_txt)}", 285),
+                            'start_time': start_atm,
+                            'end_time': end_atm,
+                            'source_name': 'ATM Milano',
+                            'source_url': full_href
+                        })
             except Exception as e:
                 print(f"Errore ATM: {e}")
 
@@ -462,28 +528,28 @@ async def run_spider():
                 await page.goto(trenord_url, timeout=35000)
                 await page.wait_for_timeout(3500)
                 tr_current_url = page.url
-                body_lines = [re.sub(r'\s+', ' ', l).strip() for l in (await page.locator("body").inner_text()).split('\n') if len(l.strip()) > 20]
+                body_lines = [re.sub(r'\s+', ' ', l).strip() for l in (await page.locator("body").inner_text()).split('\n') if len(l.strip()) > 25]
                 seen_tr = set()
                 for line in body_lines:
                     if "sciopero" in line.lower() and line not in seen_tr:
-                        seen_tr.add(line)
-                        start_tr, end_tr = extract_dates_from_text(line, default_days_offset=2)
-                        trenord_list.append({
-                            'city': 'Milano / Lombardia',
-                            'sector': 'Ferroviario',
-                            'description': f"Trenord: {line[:260]}",
-                            'start_time': start_tr,
-                            'end_time': end_tr,
-                            'source_name': 'Trenord',
-                            'source_url': tr_current_url
-                        })
-                        if len(trenord_list) >= 2:
-                            break
+                        start_tr, end_tr = extract_dates_from_text(line, allow_fallback=False)
+                        if start_tr and end_tr and end_tr >= now_threshold:
+                            seen_tr.add(line)
+                            trenord_list.append({
+                                'city': 'Milano / Lombardia',
+                                'sector': 'Ferroviario',
+                                'description': smart_truncate(f"Trenord: {line}", 285),
+                                'start_time': start_tr,
+                                'end_time': end_tr,
+                                'source_name': 'Trenord',
+                                'source_url': tr_current_url
+                            })
+                            if len(trenord_list) >= 2:
+                                break
             except Exception as e:
                 print(f"Errore Trenord: {e}")
 
             # 4. SKY TG24 CRONACA
-            now_threshold = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             try:
                 sky_article_urls = await find_sky_monthly_articles(page)
                 print(f"[SKY TG24] Articoli individuati da scansionare: {sky_article_urls}")
@@ -513,9 +579,9 @@ async def run_spider():
         # Salvataggio nel database per ciascuna fonte
         total_saved = 0
         for group in [mit_list, atm_list, trenord_list, sky_list, leggo_list]:
+            s_name = group[0]['source_name'] if group else None
             if not group:
                 continue
-            s_name = group[0]['source_name']
             s_url = group[0]['source_url']
 
             src = db.query(Source).filter(Source.name == s_name).first()
@@ -539,6 +605,14 @@ async def run_spider():
                     source_id=src.id
                 ))
                 total_saved += 1
+
+        # Pulizia di sicurezza: se una fonte (es. ATM o Leggo) in questo giro ha 0 risultati validi,
+        # rimuove eventuali vecchi record sporchi rimasti nel DB da esecuzioni precedenti!
+        for source_label, grp_list in [("ATM Milano", atm_list), ("Leggo.it Cronaca", leggo_list)]:
+            if not grp_list:
+                old_src = db.query(Source).filter(Source.name == source_label).first()
+                if old_src:
+                    db.query(Strike).filter(Strike.source_id == old_src.id).delete()
 
         log_entry.end_time = datetime.now()
         log_entry.status = "SUCCESS"

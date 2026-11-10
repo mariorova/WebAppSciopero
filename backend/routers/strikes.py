@@ -11,7 +11,14 @@ from models.strike import Strike
 from models.user import User
 from schemas.strike_schema import StrikeDetailResponse
 from scraper.scheduler import run_spider_safely
-from scraper.spider import split_multi_date_paragraph, extract_dates_from_text, find_city, classify_sector
+from scraper.spider import (
+    split_multi_date_paragraph,
+    extract_dates_from_text,
+    find_city,
+    classify_sector,
+    smart_truncate,
+    clean_atm_pub_date
+)
 
 router = APIRouter(prefix="", tags=["Scioperi"])
 
@@ -24,6 +31,11 @@ KNOWN_ENTITIES = [
     "enav", "atm", "atvo", "amt", "amtab", "atac", "trenord", "trenitalia",
     "italo", "ntv", "rfi", "iren", "sicuritalia", "ivri", "malpensa",
     "linate", "marco polo", "telecomunicazioni", "vincenzo miele", "eav", "anm"
+]
+
+NOISE_KEYWORDS = [
+    "siulp", "divise", "previdenza dedicata", "cambiamenti al servizio",
+    "deviazioni", "felice romano"
 ]
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
@@ -46,10 +58,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 def extract_entity_key(text: str) -> str:
-    """
-    Identifica l'azienda o l'ente principale citato nella descrizione (es. 'enav', 'atm', 'atvo', 'italo')
-    per accorpare con precisione lo stesso sciopero proveniente da fonti diverse.
-    """
     t_low = text.lower()
     for ent in KNOWN_ENTITIES:
         if re.search(rf'\b{re.escape(ent)}\b', t_low):
@@ -58,10 +66,21 @@ def extract_entity_key(text: str) -> str:
         return "sciopero_generale"
     return ""
 
+def is_valid_strike_record(desc: str, source_name: str) -> bool:
+    """Scarta eventuali vecchi record non pertinenti (deviazioni tram o articoli politici)."""
+    d_low = desc.lower()
+    if any(nk in d_low for nk in NOISE_KEYWORDS):
+        if "sciopero" not in d_low:
+            return False
+    if "siulp" in d_low or "previdenza dedicata" in d_low:
+        return False
+    return True
+
 def parse_and_enrich_strike(s: Strike):
     desc = s.description or ""
-    start_dt = s.start_time
-    end_dt = s.end_time
+    # Normalizza sempre start_time a mezzanotte (00:00:00) se aveva un orario fittizio di esecuzione spider
+    start_dt = s.start_time.replace(hour=0, minute=0, second=0, microsecond=0) if s.start_time else datetime.now()
+    end_dt = s.end_time.replace(hour=23, minute=59, second=59, microsecond=0) if s.end_time else datetime.now()
     city = s.city or "Nazionale"
     sector = s.sector or "Trasporti"
 
@@ -76,9 +95,9 @@ def parse_and_enrich_strike(s: Strike):
         start_dt = datetime(y1, m1, d1, 0, 0, 0)
         end_dt = datetime(y1, m1, d1, 23, 59, 59)
 
-    clean_desc = desc
-    if desc.startswith("MIT:"):
-        raw_body = desc.replace("MIT:", "").strip()
+    clean_desc = clean_atm_pub_date(desc)
+    if clean_desc.startswith("MIT:"):
+        raw_body = clean_desc.replace("MIT:", "").strip()
         parts = [p.strip() for p in raw_body.split(" - ") if p.strip()]
         if len(parts) >= 5:
             sindacato = parts[2]
@@ -91,30 +110,26 @@ def parse_and_enrich_strike(s: Strike):
             else:
                 clean_desc = f"{azienda_mezzi} • Sindacati: {sindacato}"
 
-    # Normalizza la città e il settore se provengono da descrizioni grezze
     detected_city = find_city(clean_desc)
     if city in ["Nazionale / Varie", "Nazionale"] and detected_city != "Nazionale":
         city = detected_city
     if "(na)" in clean_desc.lower() or "volla" in clean_desc.lower():
         city = "Napoli"
 
-    # Rimuove eventuali prefissi ridondanti "Sky TG24 • " o "Leggo.it • " dalla descrizione
     clean_desc = re.sub(r'^(?:Sky TG24|Leggo\.it|Leggo)\s*[•\-:]\s*', '', clean_desc, flags=re.IGNORECASE).strip()
 
     return start_dt, end_dt, city, sector, clean_desc
 
 def expand_and_deduplicate_strikes(strikes: list[Strike]) -> list[dict]:
-    """
-    1. Spezza eventuali record cumulativi (che contengono più date in un solo paragrafo) in singoli scioperi.
-    2. Unisce gli scioperi identici presi da fonti diverse in una sola card con più fonti.
-    """
     expanded_items = []
 
     for s in strikes:
         source_name = s.source.name if s.source else "Fonte Ufficiale"
         start_dt, end_dt, parsed_city, parsed_sector, parsed_desc = parse_and_enrich_strike(s)
 
-        # Se è un articolo giornalistico (Leggo o Sky) controlliamo se dentro la descrizione ci sono più date concatenate
+        if not is_valid_strike_record(parsed_desc, source_name):
+            continue
+
         if any(k in source_name.lower() for k in ["leggo", "sky"]):
             sub_chunks = split_multi_date_paragraph(parsed_desc)
         else:
@@ -122,7 +137,11 @@ def expand_and_deduplicate_strikes(strikes: list[Strike]) -> list[dict]:
 
         if len(sub_chunks) > 1:
             for chunk in sub_chunks:
-                c_start, c_end = extract_dates_from_text(chunk, default_days_offset=1)
+                if not is_valid_strike_record(chunk, source_name):
+                    continue
+                c_start, c_end = extract_dates_from_text(chunk, allow_fallback=False)
+                if not c_start or not c_end:
+                    continue
                 c_city = find_city(chunk)
                 c_sector = classify_sector("", chunk)
                 expanded_items.append({
@@ -136,6 +155,12 @@ def expand_and_deduplicate_strikes(strikes: list[Strike]) -> list[dict]:
                     "entity": extract_entity_key(chunk)
                 })
         else:
+            # Per fonti non-MIT, verifica che ci sia effettivamente una data valida o un riferimento allo sciopero
+            if source_name == "ATM Milano":
+                re_start, re_end = extract_dates_from_text(parsed_desc, allow_fallback=False)
+                if re_start and re_end:
+                    start_dt, end_dt = re_start, re_end
+
             expanded_items.append({
                 "id_sciopero": s.id,
                 "citta": parsed_city,
@@ -147,7 +172,7 @@ def expand_and_deduplicate_strikes(strikes: list[Strike]) -> list[dict]:
                 "entity": extract_entity_key(parsed_desc)
             })
 
-    # Raggruppamento degli scioperi uguali provenienti da fonti diverse
+    # Raggruppamento degli scioperi uguali provenienti da FONTI DIVERSE
     merged_groups = []
 
     for item in expanded_items:
@@ -155,9 +180,14 @@ def expand_and_deduplicate_strikes(strikes: list[Strike]) -> list[dict]:
         item_city = item["citta"].lower()
         item_sec = item["settore"].lower()
         item_ent = item["entity"]
+        item_source = item["fonti"][0]
 
         matched_group = None
         for grp in merged_groups:
+            # Regola fondamentale: NON concatenare mai due record diversi che provengono già dalla STESSA fonte
+            if item_source in grp["fonti"] and item["descrizione"] != grp["descrizione"]:
+                continue
+
             grp_day = grp["data_inizio_dt"].date()
             if item_day != grp_day:
                 continue
@@ -166,7 +196,6 @@ def expand_and_deduplicate_strikes(strikes: list[Strike]) -> list[dict]:
             grp_sec = grp["settore"].lower()
             grp_ent = grp["entity"]
 
-            # Caso 1: Stessa data e stessa azienda/ente specifico (es. "enav", "atm", "atvo", "italo", "iren")
             same_entity = bool(item_ent and grp_ent and item_ent == grp_ent)
             same_city_or_national = (
                 item_city == grp_city
@@ -176,7 +205,6 @@ def expand_and_deduplicate_strikes(strikes: list[Strike]) -> list[dict]:
                 or grp_city in item_city
             )
 
-            # Caso 2: Stessa data, stessa città specifica (non Nazionale) e stesso settore
             same_specific_city_sector = (
                 item_city != "nazionale"
                 and item_city == grp_city
@@ -189,20 +217,16 @@ def expand_and_deduplicate_strikes(strikes: list[Strike]) -> list[dict]:
                 break
 
         if matched_group:
-            # Aggiunge la nuova fonte se non è già presente nella lista delle fonti della card
             for f in item["fonti"]:
                 if f not in matched_group["fonti"]:
                     matched_group["fonti"].append(f)
 
-            # Se una delle due città è più specifica di "Nazionale" (es. "Bari" o "Milano"), conserva quella specifica
             if matched_group["citta"] == "Nazionale" and item["citta"] != "Nazionale":
                 matched_group["citta"] = item["citta"]
 
-            # Se la descrizione proviene da un articolo giornalistico più leggibile o aggiunge dettagli utili, la unisce/arricchisce
-            if item["descrizione"] != matched_group["descrizione"]:
-                # Preferisce mostrare sia la scheda tecnica MIT sia la sintesi giornalistica se proviene da un'altra fonte
-                if len(matched_group["descrizione"]) < 190 and item["descrizione"] not in matched_group["descrizione"]:
-                    matched_group["descrizione"] = f"{matched_group['descrizione']} | {item['descrizione']}"
+            # Mantiene la descrizione più ricca e pulita senza concatenare muri di testo con "|"
+            if len(item["descrizione"]) > len(matched_group["descrizione"]) and "MIT" not in matched_group["fonti"][0]:
+                matched_group["descrizione"] = item["descrizione"]
         else:
             merged_groups.append(item)
 
@@ -251,7 +275,6 @@ def get_scioperi(
         if solo_futuri and stato != "in_programma":
             continue
 
-        # Formatta le fonti multiple separate da " • " (es. "Ministero delle Infrastrutture e dei Trasporti (MIT) • Leggo.it Cronaca")
         fonti_str = " • ".join(item["fonti"])
 
         results.append({
@@ -260,7 +283,7 @@ def get_scioperi(
             "settore": parsed_sector,
             "data_inizio": start_dt.isoformat(),
             "data_fine": end_dt.isoformat(),
-            "descrizione_sintetica": parsed_desc[:300] + "..." if len(parsed_desc) > 300 else parsed_desc,
+            "descrizione_sintetica": smart_truncate(parsed_desc, 295),
             "fonte_nome": fonti_str,
             "scioperoLNK": f"/api/scioperi/{item['id_sciopero']}",
             "stato": stato

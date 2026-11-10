@@ -22,7 +22,6 @@ export default function Navbar({ activeTab, setActiveTab, isDarkMode, setIsDarkM
             </nav>
 
             <div className="navbar-actions">
-                {/* Mostriamo la campanella con dropdown notifiche solo se loggato */}
                 {isLoggedIn && (
                     <NotificationDropdown
                         strikes={strikes}
